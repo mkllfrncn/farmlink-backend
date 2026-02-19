@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Python / venv
 __pycache__/
 *.pyc
@@ -25,4 +26,33 @@ temp/
 farm.db
 
 # macOS junk
+=======
+# Python / venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.env
+*.env
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs & temp
+*.log
+tmp/
+temp/
+
+# Database backups (don't commit real DB files)
+*.sql
+*.db
+farm.db
+
+# macOS junk
+>>>>>>> a0a3097e721981080469bfad60d8a3c3348ce085
 .DS_Store
