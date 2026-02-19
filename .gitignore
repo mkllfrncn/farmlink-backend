@@ -1,0 +1,28 @@
+# Python / venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.env
+*.env
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs & temp
+*.log
+tmp/
+temp/
+
+# Database backups (don't commit real DB files)
+*.sql
+*.db
+farm.db
+
+# macOS junk
+.DS_Store
