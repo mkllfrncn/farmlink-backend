@@ -3,7 +3,7 @@
 # Core Flask & extensions
 Flask==3.1.2
 flask-cors==6.0.2
-Flask-Mail==0.10.0
+Flask-Mail==0.10.0                  # ← You can keep this for local/dev testing if wanted
 Flask-SQLAlchemy==3.1.1
 flask-jwt-extended>=4.6.0
 psycopg2-binary>=2.9.9 
@@ -30,5 +30,8 @@ python-dotenv==1.2.1
 typing_extensions==4.15.0
 Werkzeug==3.1.5
 
-# Optional but recommended for environment variables (if not already using)
-# python-dotenv==1.2.1   (already included)
+# ─── Email sending via Resend API (replaces blocked SMTP) ───────────────────
+resend>=2.0.0                       # Official Resend Python SDK – latest is ~2.22 as of Feb 2026
+
+# Optional: if you want stricter version pinning
+# resend==2.22.0

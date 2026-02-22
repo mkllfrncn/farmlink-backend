@@ -4,6 +4,7 @@ import time
 import random
 import string
 import os
+import resend
 from flask import Flask, jsonify, request
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
@@ -38,16 +39,19 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
-# ─── FLASK-MAIL CONFIG ────────────────────────────────────────────────────
+# ─── FLASK-MAIL CONFIG (local Gmail) ──────────────────────────────────────
 app.config['MAIL_SERVER']       = 'smtp.gmail.com'
 app.config['MAIL_PORT']         = 587
 app.config['MAIL_USE_TLS']      = True
 app.config['MAIL_USERNAME']     = 'farmlinktech.ph@gmail.com'
-app.config['MAIL_PASSWORD']     = 'dudjhqizwxdpjlgb'   # Move to env var for security
+app.config['MAIL_PASSWORD']     = os.environ.get('MAIL_APP_PASSWORD', 'dudjhqizwxdpjlgb')
 app.config['MAIL_DEFAULT_SENDER'] = 'farmlinktech.ph@gmail.com'
 app.config['MAIL_DEBUG']        = True
 
 mail = Mail(app)
+
+# ─── RESEND CONFIG (Render production) ────────────────────────────────────
+resend.api_key = os.environ.get('RESEND_API_KEY')
 
 # ─── JWT CONFIG ───────────────────────────────────────────────────────────
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key-please-change-this-in-production')
@@ -60,7 +64,7 @@ class User(db.Model):
     email         = db.Column(db.String(120), unique=True, nullable=False)
     fullname      = db.Column(db.String(100), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role          = db.Column(db.String(20), default="sakada")  # sakada or owner
+    role          = db.Column(db.String(20), default="sakada")
     verified      = db.Column(db.Boolean, default=False)
     access_code   = db.Column(db.String(20))
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
@@ -128,7 +132,7 @@ class IrrigationEvent(db.Model):
     id                = db.Column(db.Integer, primary_key=True)
     start_time        = db.Column(db.DateTime, default=datetime.utcnow)
     duration_minutes  = db.Column(db.Integer, nullable=False)
-    triggered_by      = db.Column(db.String(20), default="auto")  # auto, manual, user
+    triggered_by      = db.Column(db.String(20), default="auto")
     user_id           = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     solenoid_opened   = db.Column(db.Boolean, default=True)
     notes             = db.Column(db.Text, nullable=True)
@@ -166,12 +170,25 @@ def add_log(title, message, log_type="info", user_email=None):
     print(f"[LOG ADDED] {title} - {message}")
 
 def send_access_code_email(recipient_email, access_code):
-    try:
-        print(f"[EMAIL DEBUG] Attempting to send to {recipient_email} with code {access_code}")
-        msg = Message(
-            subject="Your FarmLink Access Code",
-            recipients=[recipient_email],
-            body=f"""
+    """
+    Hybrid email sender:
+    - Local → Gmail SMTP (Flask-Mail)
+    - Render → Resend API
+    """
+    is_render = any(key in os.environ for key in ['RENDER', 'RENDER_SERVICE_ID', 'RENDER_EXTERNAL_HOSTNAME'])
+
+    if is_render:
+        # Resend on Render
+        if not resend.api_key:
+            print("[EMAIL] RESEND_API_KEY missing on Render – email skipped")
+            return False
+
+        try:
+            params = {
+                "from": "FarmLink <onboarding@resend.dev>",
+                "to": [recipient_email],
+                "subject": "Your FarmLink Access Code",
+                "text": f"""
 Dear user,
 
 Your access code is: {access_code}
@@ -181,16 +198,44 @@ Keep it secure — do not share.
 
 Best regards,
 FarmLink Team
-            """.strip()
-        )
-        mail.send(msg)
-        print(f"[EMAIL SUCCESS] Sent to {recipient_email}")
-        return True
-    except Exception as e:
-        import traceback
-        print("[EMAIL CRITICAL FAILURE]")
-        print(traceback.format_exc())
-        return False
+                """.strip()
+            }
+
+            email_resp = resend.Emails.send(params)
+            print(f"[EMAIL SUCCESS Resend] to {recipient_email} - ID: {email_resp.get('id')}")
+            return True
+
+        except Exception as e:
+            print(f"[EMAIL FAIL Resend] {str(e)}")
+            return False
+
+    else:
+        # Gmail for local dev
+        try:
+            print(f"[EMAIL LOCAL] Attempting Gmail send to {recipient_email}")
+            msg = Message(
+                subject="Your FarmLink Access Code",
+                recipients=[recipient_email],
+                body=f"""
+Dear user,
+
+Your access code is: {access_code}
+
+Use this code when logging in or verifying your account.
+Keep it secure — do not share.
+
+Best regards,
+FarmLink Team
+                """.strip()
+            )
+            mail.send(msg)
+            print(f"[EMAIL SUCCESS Gmail] Sent to {recipient_email}")
+            return True
+        except Exception as e:
+            import traceback
+            print("[EMAIL FAILURE Gmail]")
+            print(traceback.format_exc())
+            return False
 
 # ─── SERIAL WORKER ────────────────────────────────────────────────────────
 
@@ -202,7 +247,7 @@ def serial_worker():
     print(f"[SERIAL] Starting on {SERIAL_PORT} @ {BAUD_RATE} baud")
 
     try:
-        import serial  # Lazy import to avoid issues on Render
+        import serial
         ser = serial.Serial(
             port=SERIAL_PORT,
             baudrate=BAUD_RATE,
@@ -271,7 +316,6 @@ def serial_worker():
     except Exception as e:
         print(f"[SERIAL CRASH] {e}")
 
-# Start serial in background (only if enabled)
 threading.Thread(target=serial_worker, daemon=True).start()
 
 # ─── AUTO-CREATE TABLES & SEED ON MODULE LOAD ──────────────────────────────
@@ -281,18 +325,14 @@ with app.app_context():
         db.create_all()
         print("[STARTUP] Tables created or already exist")
 
-        # Seed default PalayanConfig if missing
         if not PalayanConfig.query.first():
             default = PalayanConfig()
             db.session.add(default)
             db.session.commit()
             print("[STARTUP] Created default PalayanConfig")
-        else:
-            print("[STARTUP] PalayanConfig already exists")
+
     except Exception as e:
         print(f"[STARTUP ERROR] Failed to create tables or seed data: {str(e)}")
-        # Do NOT crash the app - log the error and continue
-        # This allows Gunicorn to stay alive even if DB has issues
 
 # ─── API ROUTES ───────────────────────────────────────────────────────────
 
@@ -470,4 +510,4 @@ def login():
         'role': user.role
     }), 200
 
-# End of file - no code after this
+# ─── END OF FILE ──────────────────────────────────────────────────────────
