@@ -39,18 +39,19 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
-# ─── FLASK-MAIL CONFIG (local Gmail) ──────────────────────────────────────
+# ─── FLASK-MAIL CONFIG ────────────────────────────────────────────────────
 app.config['MAIL_SERVER']       = 'smtp.gmail.com'
 app.config['MAIL_PORT']         = 587
 app.config['MAIL_USE_TLS']      = True
 app.config['MAIL_USERNAME']     = 'farmlinktech.ph@gmail.com'
-app.config['MAIL_PASSWORD']     = os.environ.get('MAIL_APP_PASSWORD', 'dudjhqizwxdpjlgb')
+app.config['MAIL_PASSWORD']     = 'qhfbxiirttjzkrzd'
 app.config['MAIL_DEFAULT_SENDER'] = 'farmlinktech.ph@gmail.com'
 app.config['MAIL_DEBUG']        = True
 
+#os.environ.get('MAIL_APP_PASSWORD'
 mail = Mail(app)
 
-# ─── RESEND CONFIG (Render production) ────────────────────────────────────
+# ─── RESEND CONFIG ────────────────────────────────────────────────────────
 resend.api_key = os.environ.get('RESEND_API_KEY')
 
 # ─── JWT CONFIG ───────────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ class User(db.Model):
     email         = db.Column(db.String(120), unique=True, nullable=False)
     fullname      = db.Column(db.String(100), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role          = db.Column(db.String(20), default="sakada")
+    role          = db.Column(db.String(20), default="sakada")  # sakada or owner
     verified      = db.Column(db.Boolean, default=False)
     access_code   = db.Column(db.String(20))
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
@@ -132,7 +133,7 @@ class IrrigationEvent(db.Model):
     id                = db.Column(db.Integer, primary_key=True)
     start_time        = db.Column(db.DateTime, default=datetime.utcnow)
     duration_minutes  = db.Column(db.Integer, nullable=False)
-    triggered_by      = db.Column(db.String(20), default="auto")
+    triggered_by      = db.Column(db.String(20), default="auto")  # auto, manual, user
     user_id           = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     solenoid_opened   = db.Column(db.Boolean, default=True)
     notes             = db.Column(db.Text, nullable=True)
@@ -170,22 +171,18 @@ def add_log(title, message, log_type="info", user_email=None):
     print(f"[LOG ADDED] {title} - {message}")
 
 def send_access_code_email(recipient_email, access_code):
-    """
-    Hybrid email sender:
-    - Local → Gmail SMTP (Flask-Mail)
-    - Render → Resend API
-    """
-    is_render = any(key in os.environ for key in ['RENDER', 'RENDER_SERVICE_ID', 'RENDER_EXTERNAL_HOSTNAME'])
+    # Detect if running on Render
+    is_render = 'RENDER' in os.environ or 'RENDER_SERVICE_ID' in os.environ
 
     if is_render:
-        # Resend on Render
+        # ─── Resend API (production on Render) ────────────────────────────────
         if not resend.api_key:
-            print("[EMAIL] RESEND_API_KEY missing on Render – email skipped")
+            print("[EMAIL] RESEND_API_KEY missing on Render – skipping send")
             return False
 
         try:
             params = {
-                "from": "FarmLink <onboarding@resend.dev>",
+                "from": "FarmLink <onboarding@resend.dev>",  # shared domain
                 "to": [recipient_email],
                 "subject": "Your FarmLink Access Code",
                 "text": f"""
@@ -202,17 +199,17 @@ FarmLink Team
             }
 
             email_resp = resend.Emails.send(params)
-            print(f"[EMAIL SUCCESS Resend] to {recipient_email} - ID: {email_resp.get('id')}")
+            print(f"[EMAIL SUCCESS via Resend] to {recipient_email} - ID: {email_resp.get('id')}")
             return True
 
         except Exception as e:
-            print(f"[EMAIL FAIL Resend] {str(e)}")
+            print(f"[EMAIL FAILURE via Resend] {str(e)}")
             return False
 
     else:
-        # Gmail for local dev
+        # ─── Gmail SMTP (local development) ───────────────────────────────────
         try:
-            print(f"[EMAIL LOCAL] Attempting Gmail send to {recipient_email}")
+            print(f"[EMAIL DEBUG local] Attempting to send to {recipient_email} with code {access_code}")
             msg = Message(
                 subject="Your FarmLink Access Code",
                 recipients=[recipient_email],
@@ -229,11 +226,11 @@ FarmLink Team
                 """.strip()
             )
             mail.send(msg)
-            print(f"[EMAIL SUCCESS Gmail] Sent to {recipient_email}")
+            print(f"[EMAIL SUCCESS local Gmail] Sent to {recipient_email}")
             return True
         except Exception as e:
             import traceback
-            print("[EMAIL FAILURE Gmail]")
+            print("[EMAIL CRITICAL FAILURE local]")
             print(traceback.format_exc())
             return False
 
@@ -247,7 +244,7 @@ def serial_worker():
     print(f"[SERIAL] Starting on {SERIAL_PORT} @ {BAUD_RATE} baud")
 
     try:
-        import serial
+        import serial  # Lazy import to avoid issues on Render
         ser = serial.Serial(
             port=SERIAL_PORT,
             baudrate=BAUD_RATE,
@@ -316,6 +313,7 @@ def serial_worker():
     except Exception as e:
         print(f"[SERIAL CRASH] {e}")
 
+# Start serial in background (only if enabled)
 threading.Thread(target=serial_worker, daemon=True).start()
 
 # ─── AUTO-CREATE TABLES & SEED ON MODULE LOAD ──────────────────────────────
@@ -325,14 +323,53 @@ with app.app_context():
         db.create_all()
         print("[STARTUP] Tables created or already exist")
 
+        # Seed default PalayanConfig if missing
         if not PalayanConfig.query.first():
             default = PalayanConfig()
             db.session.add(default)
             db.session.commit()
             print("[STARTUP] Created default PalayanConfig")
+        else:
+            print("[STARTUP] PalayanConfig already exists")
+
+        # ─── Seed initial owner account (only if no owners exist) ──────
+        if not User.query.filter_by(role='owner').first():
+            print("[STARTUP] No owner account found → creating default owner")
+
+            owner_email    = os.environ.get('DEFAULT_OWNER_EMAIL',    'owner@farmlink.ph')
+            owner_fullname = os.environ.get('DEFAULT_OWNER_NAME',     'Initial Farm Owner')
+            owner_password = os.environ.get('DEFAULT_OWNER_PASSWORD', 'ChangeThis123Secure!')
+            owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-OWNER-INIT-001')
+
+            if owner_password == 'ChangeThis123Secure!':
+                print("[SEED WARNING] Using fallback password → HIGHLY RECOMMENDED: set DEFAULT_OWNER_PASSWORD env var!")
+
+            hashed_pw = generate_password_hash(owner_password)
+
+            default_owner = User(
+                email         = owner_email,
+                fullname      = owner_fullname,
+                password_hash = hashed_pw,
+                role          = 'owner',
+                access_code   = owner_code,
+                verified      = True,
+                created_at    = datetime.utcnow()
+            )
+
+            db.session.add(default_owner)
+            db.session.commit()
+
+            print("[STARTUP] Default owner created successfully:")
+            print(f"  Email:       {owner_email}")
+            print(f"  Full name:   {owner_fullname}")
+            print(f"  Access code: {owner_code}")
+            print( "  Password:    (hashed from env var or fallback)")
+            print( "  → Log in as owner using these credentials.")
+        else:
+            print("[STARTUP] At least one owner already exists → skipping owner seed")
 
     except Exception as e:
-        print(f"[STARTUP ERROR] Failed to create tables or seed data: {str(e)}")
+        print(f"[STARTUP ERROR] Failed during table creation or seeding: {str(e)}")
 
 # ─── API ROUTES ───────────────────────────────────────────────────────────
 
@@ -441,13 +478,15 @@ def register():
     email    = data.get('email')
     fullname = data.get('fullname')
     password = data.get('password')
-    role     = data.get('role', 'sakada')
 
     if not email or not fullname or not password:
         return jsonify({'ok': False, 'error': 'Missing required fields'}), 400
 
     if User.query.filter_by(email=email).first():
         return jsonify({'ok': False, 'error': 'Email already registered'}), 409
+
+    # Force sakada for public registration
+    role = 'sakada'
 
     hashed_pw = generate_password_hash(password)
     new_user = User(
@@ -459,17 +498,15 @@ def register():
     )
 
     access_code = None
-    if role.lower() == 'owner':
+    if role == 'owner':
         access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
         new_user.access_code = access_code
+        success = send_access_code_email(email, access_code)
+        if not success:
+            print("[WARNING] Access code email failed – user still created")
 
     db.session.add(new_user)
     db.session.commit()
-
-    if access_code:
-        success = send_access_code_email(email, access_code)
-        if not success:
-            print("[WARNING] Owner email failed — user still created")
 
     return jsonify({
         'ok': True,
@@ -487,18 +524,34 @@ def login():
     role      = data.get('role')
     admincode = data.get('admincode') if role == 'owner' else None
 
+    if not email or not password or not role:
+        return jsonify({'ok': False, 'error': 'Missing required fields'}), 400
+
     user = User.query.filter_by(email=email).first()
     if not user or not check_password_hash(user.password_hash, password):
         return jsonify({'ok': False, 'error': 'Invalid email or password'}), 401
 
+    if user.role != role:
+        return jsonify({'ok': False, 'error': 'Role mismatch for this account'}), 403
+
     if role == 'owner':
-        if user.role != 'owner':
-            return jsonify({'ok': False, 'error': 'Not an owner account'}), 403
         if not user.access_code or admincode != user.access_code:
             return jsonify({'ok': False, 'error': 'Invalid or missing access code'}), 403
+        
+        # Mark as verified on first successful owner login
         if not user.verified:
             user.verified = True
             db.session.commit()
+
+        # ─── SEND EMAIL ON SUCCESSFUL OWNER LOGIN ────────────────────────
+        success = send_access_code_email(
+            recipient_email = email,
+            access_code     = user.access_code
+        )
+        if success:
+            print(f"[LOGIN EMAIL] Access code re-sent to owner: {email}")
+        else:
+            print(f"[LOGIN EMAIL] Failed to send to owner: {email}")
 
     token = create_access_token(identity={'email': user.email, 'role': user.role})
 
@@ -507,7 +560,6 @@ def login():
         'token': token,
         'fullname': user.fullname,
         'email': user.email,
-        'role': user.role
+        'role': user.role,
+        'message': 'Login successful' + (' — access code re-sent to email' if role == 'owner' else '')
     }), 200
-
-# ─── END OF FILE ──────────────────────────────────────────────────────────
