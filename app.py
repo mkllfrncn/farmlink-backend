@@ -24,7 +24,7 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ─── DATABASE CONFIGURATION ───────────────────────────────────────────────
 db_uri = os.environ.get('DATABASE_URL')
-if db_uri and db_uri.startswith('postgres://'):
+if db_uri and 'postgres' in db_uri.lower():
     db_uri = db_uri.replace('postgres://', 'postgresql://', 1)
     app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
 else:
@@ -128,7 +128,7 @@ class IrrigationEvent(db.Model):
     id                = db.Column(db.Integer, primary_key=True)
     start_time        = db.Column(db.DateTime, default=datetime.utcnow)
     duration_minutes  = db.Column(db.Integer, nullable=False)
-    triggered_by      = db.Column(db.String(20), default="auto")
+    triggered_by      = db.Column(db.String(20), default="auto")  # auto, manual, user
     user_id           = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     solenoid_opened   = db.Column(db.Boolean, default=True)
     notes             = db.Column(db.Text, nullable=True)
@@ -202,7 +202,7 @@ def serial_worker():
     print(f"[SERIAL] Starting on {SERIAL_PORT} @ {BAUD_RATE} baud")
 
     try:
-        import serial
+        import serial  # Lazy import to avoid issues on Render
         ser = serial.Serial(
             port=SERIAL_PORT,
             baudrate=BAUD_RATE,
@@ -271,7 +271,28 @@ def serial_worker():
     except Exception as e:
         print(f"[SERIAL CRASH] {e}")
 
+# Start serial in background (only if enabled)
 threading.Thread(target=serial_worker, daemon=True).start()
+
+# ─── AUTO-CREATE TABLES & SEED ON MODULE LOAD ──────────────────────────────
+with app.app_context():
+    try:
+        print("[STARTUP] Creating tables if they don't exist...")
+        db.create_all()
+        print("[STARTUP] Tables created or already exist")
+
+        # Seed default PalayanConfig if missing
+        if not PalayanConfig.query.first():
+            default = PalayanConfig()
+            db.session.add(default)
+            db.session.commit()
+            print("[STARTUP] Created default PalayanConfig")
+        else:
+            print("[STARTUP] PalayanConfig already exists")
+    except Exception as e:
+        print(f"[STARTUP ERROR] Failed to create tables or seed data: {str(e)}")
+        # Do NOT crash the app - log the error and continue
+        # This allows Gunicorn to stay alive even if DB has issues
 
 # ─── API ROUTES ───────────────────────────────────────────────────────────
 
@@ -449,12 +470,4 @@ def login():
         'role': user.role
     }), 200
 
-# ─── AUTO-CREATE TABLES ON MODULE LOAD (FOR GUNICORN) ──────────────────────
-with app.app_context():
-    print("[STARTUP] Creating tables if they don't exist...")
-    db.create_all()
-    if not PalayanConfig.query.first():
-        default = PalayanConfig()
-        db.session.add(default)
-        db.session.commit()
-        print("[STARTUP] Created default PalayanConfig")
+# End of file - no code after this
