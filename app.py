@@ -40,6 +40,17 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
+# ─── AUTO-CREATE TABLES ON FIRST STARTUP ──────────────────────────────────
+with app.app_context():
+    print("[STARTUP] Creating tables if they don't exist...")
+    db.create_all()
+    # Seed default PalayanConfig if missing
+    if not PalayanConfig.query.first():
+        default = PalayanConfig()
+        db.session.add(default)
+        db.session.commit()
+        print("[STARTUP] Created default PalayanConfig")
+
 # ─── FLASK-MAIL CONFIG ────────────────────────────────────────────────────
 app.config['MAIL_SERVER']       = 'smtp.gmail.com'
 app.config['MAIL_PORT']         = 587
@@ -460,14 +471,14 @@ def login():
 
 # ─── STARTUP ──────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    with app.app_context():
-        print("[DEBUG] Creating tables if missing...")
-        db.create_all()
-        # Seed default config if missing
-        if not PalayanConfig.query.first():
-            default = PalayanConfig()
-            db.session.add(default)
-            db.session.commit()
-            print("[SEED] Created default PalayanConfig")
-    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
+#if __name__ == "__main__":
+ #   with app.app_context():
+ #       print("[DEBUG] Creating tables if missing...")
+ #       db.create_all()
+  #      # Seed default config if missing
+ #       if not PalayanConfig.query.first():
+  #          default = PalayanConfig()
+ #           db.session.add(default)
+  #          db.session.commit()
+  #          print("[SEED] Created default PalayanConfig")
+ #   app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
