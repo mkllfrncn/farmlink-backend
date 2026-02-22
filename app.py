@@ -24,12 +24,10 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ─── DATABASE CONFIGURATION ───────────────────────────────────────────────
 db_uri = os.environ.get('DATABASE_URL')
-if db_uri and 'postgres' in db_uri:
-    # Fix scheme for SQLAlchemy (Render uses postgres://, SQLAlchemy wants postgresql://)
+if db_uri and db_uri.startswith('postgres://'):
     db_uri = db_uri.replace('postgres://', 'postgresql://', 1)
     app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
 else:
-    # Local fallback only - will fail on Render if DATABASE_URL missing
     app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:041323@localhost:3306/farmlinkdb'
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -40,23 +38,12 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 
 db = SQLAlchemy(app)
 
-# ─── AUTO-CREATE TABLES ON FIRST STARTUP ──────────────────────────────────
-with app.app_context():
-    print("[STARTUP] Creating tables if they don't exist...")
-    db.create_all()
-    # Seed default PalayanConfig if missing
-    if not PalayanConfig.query.first():
-        default = PalayanConfig()
-        db.session.add(default)
-        db.session.commit()
-        print("[STARTUP] Created default PalayanConfig")
-
 # ─── FLASK-MAIL CONFIG ────────────────────────────────────────────────────
 app.config['MAIL_SERVER']       = 'smtp.gmail.com'
 app.config['MAIL_PORT']         = 587
 app.config['MAIL_USE_TLS']      = True
 app.config['MAIL_USERNAME']     = 'farmlinktech.ph@gmail.com'
-app.config['MAIL_PASSWORD']     = 'dudjhqizwxdpjlgb'   # Move to env var for security: os.environ.get('MAIL_PASSWORD')
+app.config['MAIL_PASSWORD']     = 'dudjhqizwxdpjlgb'   # Move to env var for security
 app.config['MAIL_DEFAULT_SENDER'] = 'farmlinktech.ph@gmail.com'
 app.config['MAIL_DEBUG']        = True
 
@@ -102,7 +89,6 @@ class PalayanConfig(db.Model):
     max_temperature     = db.Column(db.Float, default=35.0)
     min_humidity        = db.Column(db.Float, default=50.0)
     last_updated        = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    # Live sensor values
     current_moisture    = db.Column(db.Float, default=0.0)
     current_temperature = db.Column(db.Float, default=0.0)
     current_humidity    = db.Column(db.Float, default=0.0)
@@ -142,7 +128,7 @@ class IrrigationEvent(db.Model):
     id                = db.Column(db.Integer, primary_key=True)
     start_time        = db.Column(db.DateTime, default=datetime.utcnow)
     duration_minutes  = db.Column(db.Integer, nullable=False)
-    triggered_by      = db.Column(db.String(20), default="auto")  # auto, manual, user
+    triggered_by      = db.Column(db.String(20), default="auto")
     user_id           = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     solenoid_opened   = db.Column(db.Boolean, default=True)
     notes             = db.Column(db.Text, nullable=True)
@@ -216,7 +202,7 @@ def serial_worker():
     print(f"[SERIAL] Starting on {SERIAL_PORT} @ {BAUD_RATE} baud")
 
     try:
-        import serial  # Lazy import to avoid issues on Render
+        import serial
         ser = serial.Serial(
             port=SERIAL_PORT,
             baudrate=BAUD_RATE,
@@ -254,7 +240,6 @@ def serial_worker():
 
                 moisture_percent = round(100 - (moisture_raw / 10.23), 1)
 
-                # Update config (single row)
                 config = PalayanConfig.query.first()
                 if config:
                     config.current_moisture = moisture_percent
@@ -265,7 +250,6 @@ def serial_worker():
                     config.last_updated = datetime.utcnow()
                     db.session.commit()
 
-                # Save historical reading
                 reading = SensorReading(
                     moisture=moisture_percent,
                     temperature=temperature,
@@ -287,13 +271,12 @@ def serial_worker():
     except Exception as e:
         print(f"[SERIAL CRASH] {e}")
 
-# Start serial in background (only if enabled)
 threading.Thread(target=serial_worker, daemon=True).start()
 
 # ─── API ROUTES ───────────────────────────────────────────────────────────
 
 @app.route("/api/data")
-@jwt_required(optional=True)  # Optional: allow unauth access or require JWT
+@jwt_required(optional=True)
 def api_data():
     config = PalayanConfig.query.first()
     if not config:
@@ -321,7 +304,7 @@ def api_alerts():
 def api_status():
     config = PalayanConfig.query.first()
     return jsonify({
-        "lora": True,  # placeholder
+        "lora": True,
         "mcu1": True,
         "mcu2": True,
         "auto_mode": config.auto_mode if config else True
@@ -354,7 +337,7 @@ def update_profile():
     current_user = get_jwt_identity()
     data = request.get_json()
     fullname = data.get('fullname')
-    email = current_user['email']  # Use JWT email for security
+    email = current_user['email']
 
     if not fullname:
         return jsonify({"ok": False, "error": "Full name required"}), 400
@@ -426,7 +409,6 @@ def register():
         success = send_access_code_email(email, access_code)
         if not success:
             print("[WARNING] Owner email failed — user still created")
-            # Optional: rollback if email is critical, but for now proceed
 
     return jsonify({
         'ok': True,
@@ -453,12 +435,10 @@ def login():
             return jsonify({'ok': False, 'error': 'Not an owner account'}), 403
         if not user.access_code or admincode != user.access_code:
             return jsonify({'ok': False, 'error': 'Invalid or missing access code'}), 403
-        # Mark verified after successful code validation
         if not user.verified:
             user.verified = True
             db.session.commit()
 
-    # Generate JWT token
     token = create_access_token(identity={'email': user.email, 'role': user.role})
 
     return jsonify({
@@ -469,16 +449,12 @@ def login():
         'role': user.role
     }), 200
 
-# ─── STARTUP ──────────────────────────────────────────────────────────────
-
-#if __name__ == "__main__":
- #   with app.app_context():
- #       print("[DEBUG] Creating tables if missing...")
- #       db.create_all()
-  #      # Seed default config if missing
- #       if not PalayanConfig.query.first():
-  #          default = PalayanConfig()
- #           db.session.add(default)
-  #          db.session.commit()
-  #          print("[SEED] Created default PalayanConfig")
- #   app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
+# ─── AUTO-CREATE TABLES ON MODULE LOAD (FOR GUNICORN) ──────────────────────
+with app.app_context():
+    print("[STARTUP] Creating tables if they don't exist...")
+    db.create_all()
+    if not PalayanConfig.query.first():
+        default = PalayanConfig()
+        db.session.add(default)
+        db.session.commit()
+        print("[STARTUP] Created default PalayanConfig")
