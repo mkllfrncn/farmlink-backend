@@ -358,7 +358,6 @@ def update_profile():
 
     return jsonify({"ok": True, "message": "Profile updated", "fullname": fullname})
 
-# Example: Owner-only access codes viewing (protected by JWT)
 @app.route('/api/access-codes', methods=['GET'])
 @jwt_required()
 def get_access_codes():
@@ -369,6 +368,16 @@ def get_access_codes():
     users = User.query.filter_by(role='owner').all()
     codes = [{'email': u.email, 'code': u.access_code} for u in users if u.access_code]
     return jsonify({'ok': True, 'codes': codes})
+
+@app.route('/debug-env')
+def debug_env():
+    env_value = os.environ.get('DATABASE_URL', 'MISSING_ENV_VAR')
+    uri_used = app.config.get('SQLALCHEMY_DATABASE_URI', 'NOT_SET')
+    return jsonify({
+        'env_DATABASE_URL': env_value[:60] + '...' if len(env_value) > 60 else env_value,
+        'actual_uri_used': uri_used[:60] + '...' if len(uri_used) > 60 else uri_used,
+        'is_postgres': 'postgresql' in uri_used if uri_used else False
+    })
 
 # ─── REGISTRATION ─────────────────────────────────────────────────────────
 
@@ -438,16 +447,6 @@ def login():
         if not user.verified:
             user.verified = True
             db.session.commit()
-
-            @app.route('/debug-env')
-def debug_env():
-    env_value = os.environ.get('DATABASE_URL', 'MISSING_ENV_VAR')
-    uri_used = app.config.get('SQLALCHEMY_DATABASE_URI', 'NOT_SET')
-    return jsonify({
-        'env_DATABASE_URL': env_value[:60] + '...' if len(env_value) > 60 else env_value,
-        'actual_uri_used': uri_used[:60] + '...' if len(uri_used) > 60 else uri_used,
-        'is_postgres': 'postgresql' in uri_used if uri_used else False
-    })
 
     # Generate JWT token
     token = create_access_token(identity={'email': user.email, 'role': user.role})
