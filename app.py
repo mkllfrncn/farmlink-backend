@@ -23,14 +23,13 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ─── DATABASE CONFIGURATION ───────────────────────────────────────────────
-# Use DATABASE_URL from environment (Render PostgreSQL) or fallback to local MySQL
 db_uri = os.environ.get('DATABASE_URL')
-if db_uri and db_uri.startswith('postgres://'):
-    # Fix Render's postgres:// → postgresql:// for SQLAlchemy compatibility
+if db_uri and 'postgres' in db_uri:
+    # Fix scheme for SQLAlchemy (Render uses postgres://, SQLAlchemy wants postgresql://)
     db_uri = db_uri.replace('postgres://', 'postgresql://', 1)
     app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
 else:
-    # Local fallback (your Windows MySQL dev setup)
+    # Local fallback only - will fail on Render if DATABASE_URL missing
     app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:041323@localhost:3306/farmlinkdb'
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
