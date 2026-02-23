@@ -534,37 +534,6 @@ def api_report():
 
     return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=farmlink_report.csv"})
 
-@app.route('/api/resend-owner-code', methods=['POST'])
-def resend_owner_code():
-    data = request.get_json()
-    email = data.get('email')
-
-    if not email:
-        return jsonify({'ok': False, 'error': 'Email required'}), 400
-
-    user = User.query.filter_by(email=email, role='owner').first()
-    if not user:
-        return jsonify({'ok': False, 'error': 'No owner account found with this email'}), 404
-
-    if not user.access_code:
-        return jsonify({'ok': False, 'error': 'No access code found for this account'}), 400
-
-    success = send_access_code_email(
-        recipient_email = email,
-        access_code     = user.access_code
-    )
-
-    if success:
-        return jsonify({
-            'ok': True,
-            'message': 'Access code re-sent to your email'
-        }), 200
-    else:
-        return jsonify({
-            'ok': False,
-            'error': 'Failed to send access code email. Please try again later.'
-        }), 500
-
 # ─── REGISTRATION ─────────────────────────────────────────────────────────
 
 @app.route('/api/register', methods=['POST'])
