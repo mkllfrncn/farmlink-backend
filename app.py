@@ -536,24 +536,90 @@ def api_report():
 
 # ─── REGISTRATION ─────────────────────────────────────────────────────────
 
-@app.route('/api/register', methods=['POST'])
+@app.route('/api/register', methods=['POST', 'OPTIONS'])
 def register():
-    data = request.get_json()
+    if request.method == 'OPTIONS':
+        # Handle CORS preflight explicitly
+        response = jsonify({'ok': True})
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        return response, 200
+
+    # ────────────────────────────────────────────────────────────────
+    # Logging everything for debugging
+    # ────────────────────────────────────────────────────────────────
+    print("════════════════════════════════════════════════════════════")
+    print("[REGISTER] NEW REQUEST RECEIVED")
+    print("Time:", datetime.utcnow().isoformat())
+    print("Remote IP:", request.remote_addr)
+    print("Method:", request.method)
+    print("Headers:", dict(request.headers))
+    print("Content-Type:", request.headers.get('Content-Type'))
+    print("Content-Length:", request.headers.get('Content-Length'))
+
+    # ────────────────────────────────────────────────────────────────
+    # Parse JSON - force parsing even if Content-Type is suspicious
+    # ────────────────────────────────────────────────────────────────
+    data = request.get_json(force=True, silent=True)
+
+    # Fallback if get_json() fails (very common behind proxies like Render)
+    if data is None:
+        print("[REGISTER] request.get_json(force=True) returned None → using raw fallback")
+        try:
+            raw_body = request.get_data(as_text=True)
+            print("[REGISTER] Raw body received:", raw_body)
+            if raw_body and raw_body.strip():
+                data = json.loads(raw_body)
+            else:
+                data = {}
+        except json.JSONDecodeError as json_err:
+            print("[REGISTER] JSON decode error on raw body:", str(json_err))
+            data = {}
+        except Exception as e:
+            print("[REGISTER] Raw body fallback failed:", str(e))
+            data = {}
+
+    print("[REGISTER] Final parsed data:", data)
+
+    # Extract fields
     email    = data.get('email')
     fullname = data.get('fullname')
     password = data.get('password')
-    role     = data.get('role')  # Add this
+    role     = data.get('role', 'sakada')  # default to sakada if not sent
 
-    if not email or not fullname or not password or not role:
-        return jsonify({'ok': False, 'error': 'Missing required fields'}), 400
+    print(f"  email    = {email}")
+    print(f"  fullname = {fullname}")
+    print(f"  password = {'[present]' if password else '[missing]'} (length: {len(password or '')})")
+    print(f"  role     = {role}")
 
-    if role not in ['sakada', 'owner']:
-        return jsonify({'ok': False, 'error': 'Invalid role'}), 400
+    # ────────────────────────────────────────────────────────────────
+    # Validation
+    # ────────────────────────────────────────────────────────────────
+    if not all([email, fullname, password]):
+        missing = []
+        if not email:    missing.append('email')
+        if not fullname: missing.append('fullname')
+        if not password: missing.append('password')
+        print(f"[REGISTER] Missing fields: {', '.join(missing)}")
+        return jsonify({
+            'ok': False,
+            'error': f'Missing required fields: {", ".join(missing)}'
+        }), 400
 
     if User.query.filter_by(email=email).first():
+        print("[REGISTER] Email already exists:", email)
         return jsonify({'ok': False, 'error': 'Email already registered'}), 409
 
+    if role not in ['sakada', 'owner']:
+        print("[REGISTER] Invalid role:", role)
+        return jsonify({'ok': False, 'error': 'Invalid role'}), 400
+
+    # ────────────────────────────────────────────────────────────────
+    # Create user
+    # ────────────────────────────────────────────────────────────────
     hashed_pw = generate_password_hash(password)
+
     new_user = User(
         email=email,
         fullname=fullname,
@@ -567,15 +633,30 @@ def register():
         access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
         new_user.access_code = access_code
         success = send_access_code_email(email, access_code)
-        if not success:
-            print("[WARNING] Access code email failed – user still created")
+        if success:
+            print("[REGISTER] Access code email sent to owner:", email)
+        else:
+            print("[REGISTER] Access code email FAILED for:", email)
 
-    db.session.add(new_user)
-    db.session.commit()
+    try:
+        db.session.add(new_user)
+        db.session.commit()
+        print("[REGISTER] User created successfully:", email)
+    except Exception as db_err:
+        db.session.rollback()
+        print("[REGISTER] Database error:", str(db_err))
+        return jsonify({'ok': False, 'error': 'Database error - please try again'}), 500
+
+    # ────────────────────────────────────────────────────────────────
+    # Success response
+    # ────────────────────────────────────────────────────────────────
+    message = 'Registered successfully'
+    if role == 'owner' and access_code:
+        message += ' — access code sent to your email'
 
     return jsonify({
         'ok': True,
-        'message': 'Registered successfully' + (' — access code sent to email' if role == 'owner' else ''),
+        'message': message,
         'role': role
     }), 201
 
