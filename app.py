@@ -67,7 +67,7 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     role          = db.Column(db.String(20), default="sakada")  # sakada or owner
     verified      = db.Column(db.Boolean, default=False)
-    access_code   = db.Column(db.String(20))
+    access_code   = db.Column(db.String(30))
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
 
     def __repr__(self):
@@ -339,7 +339,7 @@ with app.app_context():
             owner_email    = os.environ.get('DEFAULT_OWNER_EMAIL',    'owner@farmlink.ph')
             owner_fullname = os.environ.get('DEFAULT_OWNER_NAME',     'Initial Farm Owner')
             owner_password = os.environ.get('DEFAULT_OWNER_PASSWORD', 'ChangeThis123Secure!')
-            owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-OWNER-INIT-001')
+            owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-INIT-001')
 
             if owner_password == 'ChangeThis123Secure!':
                 print("[SEED WARNING] Using fallback password → HIGHLY RECOMMENDED: set DEFAULT_OWNER_PASSWORD env var!")
