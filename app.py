@@ -173,13 +173,13 @@ def add_log(title, message, log_type="info", user_email=None):
 
 def send_access_code_email(recipient_email, access_code):
     # Detect if running on Render
-    is_render = 'RENDER' in os.environ or 'RENDER_SERVICE_ID' in os.environ
+    #is_render = 'RENDER' in os.environ or 'RENDER_SERVICE_ID' in os.environ
 
-    if is_render:
+    #if is_render:
         # ─── Resend API (production on Render) ────────────────────────────────
-        if not resend.api_key:
-            print("[EMAIL] RESEND_API_KEY missing on Render – skipping send")
-            return False
+    #    if not resend.api_key:
+    #        print("[EMAIL] RESEND_API_KEY missing on Render – skipping send")
+    #        return False
 
         try:
             params = {
@@ -207,7 +207,7 @@ FarmLink Team
             print(f"[EMAIL FAILURE via Resend] {str(e)}")
             return False
 
-    else:
+    #else:
         # ─── Gmail SMTP (local development) ───────────────────────────────────
         try:
             print(f"[EMAIL DEBUG local] Attempting to send to {recipient_email} with code {access_code}")
@@ -534,29 +534,36 @@ def api_report():
 
     return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=farmlink_report.csv"})
 
-@app.route('/api/verify-owner-code', methods=['POST'])
-def verify_owner_code():
+@app.route('/api/resend-owner-code', methods=['POST'])
+def resend_owner_code():
     data = request.get_json()
-    code = data.get('code')
+    email = data.get('email')
 
-    if not code:
-        return jsonify({'ok': False, 'error': 'Code required'}), 400
+    if not email:
+        return jsonify({'ok': False, 'error': 'Email required'}), 400
 
-    owner = User.query.filter_by(access_code=code, role='owner').first()
+    user = User.query.filter_by(email=email, role='owner').first()
+    if not user:
+        return jsonify({'ok': False, 'error': 'No owner account found with this email'}), 404
 
-    if not owner:
-        return jsonify({'ok': False, 'error': 'Invalid or expired access code'}), 400
+    if not user.access_code:
+        return jsonify({'ok': False, 'error': 'No access code found for this account'}), 400
 
-    # Optional: one-time use
-    # owner.access_code = None
-    # db.session.commit()
+    success = send_access_code_email(
+        recipient_email = email,
+        access_code     = user.access_code
+    )
 
-    return jsonify({
-        'ok': True,
-        'message': 'Code verified',
-        # Optional: hint which email it belongs to (security through obscurity)
-        'email_hint': owner.email[:3] + '***@***'
-    })
+    if success:
+        return jsonify({
+            'ok': True,
+            'message': 'Access code re-sent to your email'
+        }), 200
+    else:
+        return jsonify({
+            'ok': False,
+            'error': 'Failed to send access code email. Please try again later.'
+        }), 500
 
 # ─── REGISTRATION ─────────────────────────────────────────────────────────
 
@@ -645,6 +652,38 @@ def register():
         db.session.rollback()
         print(f"[REGISTER ERROR] Database commit failed: {str(e)}")
         return jsonify({'ok': False, 'error': 'Failed to create account. Please try again.'}), 500
+    
+
+@app.route('/api/resend-owner-code', methods=['POST'])
+def resend_owner_code():
+    data = request.get_json()
+    email = data.get('email')
+
+    if not email:
+        return jsonify({'ok': False, 'error': 'Email required'}), 400
+
+    user = User.query.filter_by(email=email, role='owner').first()
+    if not user:
+        return jsonify({'ok': False, 'error': 'No owner account found with this email'}), 404
+
+    if not user.access_code:
+        return jsonify({'ok': False, 'error': 'No access code found for this account'}), 400
+
+    success = send_access_code_email(
+        recipient_email = email,
+        access_code     = user.access_code
+    )
+
+    if success:
+        return jsonify({
+            'ok': True,
+            'message': 'Access code re-sent to your email'
+        }), 200
+    else:
+        return jsonify({
+            'ok': False,
+            'error': 'Failed to send access code email. Please try again later.'
+        }), 500
     
 # ─── LOGIN ────────────────────────────────────────────────────────────────
 
