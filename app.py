@@ -534,90 +534,76 @@ def api_report():
 
     return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=farmlink_report.csv"})
 
+@app.route('/api/verify-owner-code', methods=['POST'])
+def verify_owner_code():
+    data = request.get_json()
+    code = data.get('code')
+
+    if not code:
+        return jsonify({'ok': False, 'error': 'Code required'}), 400
+
+    owner = User.query.filter_by(access_code=code, role='owner').first()
+
+    if not owner:
+        return jsonify({'ok': False, 'error': 'Invalid or expired access code'}), 400
+
+    # Optional: one-time use
+    # owner.access_code = None
+    # db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'message': 'Code verified',
+        # Optional: hint which email it belongs to (security through obscurity)
+        'email_hint': owner.email[:3] + '***@***'
+    })
+
 # ─── REGISTRATION ─────────────────────────────────────────────────────────
 
-@app.route('/api/register', methods=['POST', 'OPTIONS'])
+@app.route('/api/register', methods=['POST'])
 def register():
-    if request.method == 'OPTIONS':
-        # Handle CORS preflight explicitly
-        response = jsonify({'ok': True})
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-        return response, 200
-
-    # ────────────────────────────────────────────────────────────────
-    # Logging everything for debugging
-    # ────────────────────────────────────────────────────────────────
-    print("════════════════════════════════════════════════════════════")
-    print("[REGISTER] NEW REQUEST RECEIVED")
-    print("Time:", datetime.utcnow().isoformat())
-    print("Remote IP:", request.remote_addr)
-    print("Method:", request.method)
-    print("Headers:", dict(request.headers))
-    print("Content-Type:", request.headers.get('Content-Type'))
-    print("Content-Length:", request.headers.get('Content-Length'))
-
-    # ────────────────────────────────────────────────────────────────
-    # Parse JSON - force parsing even if Content-Type is suspicious
-    # ────────────────────────────────────────────────────────────────
-    data = request.get_json(force=True, silent=True)
-
-    # Fallback if get_json() fails (very common behind proxies like Render)
+    data = request.get_json(silent=True)
+    
     if data is None:
-        print("[REGISTER] request.get_json(force=True) returned None → using raw fallback")
-        try:
-            raw_body = request.get_data(as_text=True)
-            print("[REGISTER] Raw body received:", raw_body)
-            if raw_body and raw_body.strip():
-                data = json.loads(raw_body)
-            else:
-                data = {}
-        except json.JSONDecodeError as json_err:
-            print("[REGISTER] JSON decode error on raw body:", str(json_err))
-            data = {}
-        except Exception as e:
-            print("[REGISTER] Raw body fallback failed:", str(e))
-            data = {}
+        return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
 
-    print("[REGISTER] Final parsed data:", data)
+    email       = data.get('email')
+    fullname    = data.get('fullname')
+    password    = data.get('password')
+    role        = data.get('role', 'sakada')
+    access_code = data.get('access_code')  # required only for owner
 
-    # Extract fields
-    email    = data.get('email')
-    fullname = data.get('fullname')
-    password = data.get('password')
-    role     = data.get('role', 'sakada')  # default to sakada if not sent
-
-    print(f"  email    = {email}")
-    print(f"  fullname = {fullname}")
-    print(f"  password = {'[present]' if password else '[missing]'} (length: {len(password or '')})")
-    print(f"  role     = {role}")
-
-    # ────────────────────────────────────────────────────────────────
-    # Validation
-    # ────────────────────────────────────────────────────────────────
+    # Basic field validation
     if not all([email, fullname, password]):
-        missing = []
-        if not email:    missing.append('email')
-        if not fullname: missing.append('fullname')
-        if not password: missing.append('password')
-        print(f"[REGISTER] Missing fields: {', '.join(missing)}")
+        missing = [k for k, v in {'email': email, 'fullname': fullname, 'password': password}.items() if not v]
         return jsonify({
             'ok': False,
             'error': f'Missing required fields: {", ".join(missing)}'
         }), 400
 
+    # Validate role
+    if role not in ['sakada', 'owner']:
+        return jsonify({'ok': False, 'error': 'Invalid role. Must be "sakada" or "owner"'}), 400
+
+    # Owner must provide access_code
+    if role == 'owner' and not access_code:
+        return jsonify({'ok': False, 'error': 'Access code is required for owner registration'}), 400
+
+    # Check email already exists
     if User.query.filter_by(email=email).first():
-        print("[REGISTER] Email already exists:", email)
         return jsonify({'ok': False, 'error': 'Email already registered'}), 409
 
-    if role not in ['sakada', 'owner']:
-        print("[REGISTER] Invalid role:", role)
-        return jsonify({'ok': False, 'error': 'Invalid role'}), 400
+    # Validate access code for owner
+    if role == 'owner':
+        owner_record = User.query.filter_by(access_code=access_code, role='owner').first()
+        if not owner_record:
+            return jsonify({'ok': False, 'error': 'Invalid or expired access code'}), 400
+        
+        # Optional: make code one-time use (uncomment if desired)
+        # owner_record.access_code = None
+        # db.session.commit()
 
-    # ────────────────────────────────────────────────────────────────
-    # Create user
-    # ────────────────────────────────────────────────────────────────
+    # Create the user
     hashed_pw = generate_password_hash(password)
 
     new_user = User(
@@ -628,38 +614,38 @@ def register():
         verified=False
     )
 
-    access_code = None
+    # Generate and send access code ONLY if registering a NEW owner
+    # (not when using an existing code to register)
+    sent_access_code = None
     if role == 'owner':
-        access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        new_user.access_code = access_code
-        success = send_access_code_email(email, access_code)
-        if success:
-            print("[REGISTER] Access code email sent to owner:", email)
-        else:
-            print("[REGISTER] Access code email FAILED for:", email)
+        # Generate a new access code for this new owner account
+        sent_access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        new_user.access_code = sent_access_code
+        
+        # Send email
+        success = send_access_code_email(email, sent_access_code)
+        if not success:
+            print(f"[WARNING] Failed to send access code email to {email}")
 
     try:
         db.session.add(new_user)
         db.session.commit()
-        print("[REGISTER] User created successfully:", email)
-    except Exception as db_err:
+        
+        message = 'Registered successfully'
+        if role == 'owner' and sent_access_code:
+            message += ' — your new access code has been sent to your email'
+
+        return jsonify({
+            'ok': True,
+            'message': message,
+            'role': role
+        }), 201
+
+    except Exception as e:
         db.session.rollback()
-        print("[REGISTER] Database error:", str(db_err))
-        return jsonify({'ok': False, 'error': 'Database error - please try again'}), 500
-
-    # ────────────────────────────────────────────────────────────────
-    # Success response
-    # ────────────────────────────────────────────────────────────────
-    message = 'Registered successfully'
-    if role == 'owner' and access_code:
-        message += ' — access code sent to your email'
-
-    return jsonify({
-        'ok': True,
-        'message': message,
-        'role': role
-    }), 201
-
+        print(f"[REGISTER ERROR] Database commit failed: {str(e)}")
+        return jsonify({'ok': False, 'error': 'Failed to create account. Please try again.'}), 500
+    
 # ─── LOGIN ────────────────────────────────────────────────────────────────
 
 @app.route('/api/login', methods=['POST'])
