@@ -5,6 +5,7 @@ import random
 import string
 import os
 import resend
+import io
 from flask import Flask, jsonify, request
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
@@ -401,11 +402,17 @@ def api_alerts():
 @jwt_required(optional=True)
 def api_status():
     config = PalayanConfig.query.first()
+    if not config:
+        return jsonify({"lora": False, "mcu1": False, "mcu2": False, "auto_mode": False})
+
+    delta = (datetime.utcnow() - config.last_updated).total_seconds()
+    is_online = delta < 60  # Online if updated in last minute
+
     return jsonify({
-        "lora": True,
-        "mcu1": True,
-        "mcu2": True,
-        "auto_mode": config.auto_mode if config else True
+        "lora": is_online,
+        "mcu1": is_online,  # Assume same for now
+        "mcu2": is_online,
+        "auto_mode": config.auto_mode
     })
 
 @app.route('/api/logs', methods=['GET'])
@@ -470,6 +477,63 @@ def debug_env():
         'is_postgres': 'postgresql' in uri_used if uri_used else False
     })
 
+@app.route('/api/settings', methods=['GET', 'POST'])
+@jwt_required()
+def api_settings():
+    current_user = get_jwt_identity()
+    config = PalayanConfig.query.first()
+    if not config:
+        return jsonify({"ok": False, "message": "No configuration"}), 500
+
+    if request.method == 'POST':
+        if current_user['role'] != 'owner':
+            return jsonify({'ok': False, 'error': 'Owners only'}), 403
+        data = request.get_json()
+        config.min_moisture = data.get('threshold_zoneA_min', config.min_moisture)
+        config.max_moisture = data.get('threshold_zoneA_max', config.max_moisture)
+        # Add Zone B if you expand model, else ignore or add fields
+        config.auto_water_time = data.get('auto_water_time', config.auto_water_time)
+        config.duration_minutes = data.get('duration', config.duration_minutes)
+        config.max_temperature = data.get('max_temp', config.max_temperature)
+        config.min_humidity = data.get('min_humidity', config.min_humidity)
+        config.auto_mode = data.get('auto_mode', config.auto_mode)
+        db.session.commit()
+        return jsonify({"ok": True, "message": "Settings updated"})
+
+    # GET
+    return jsonify({
+        "ok": True,
+        "threshold_zoneA_min": config.min_moisture,
+        "threshold_zoneA_max": config.max_moisture,
+        "threshold_zoneB_min": 35,  # Hardcode or add to model
+        "threshold_zoneB_max": 65,
+        "auto_water_time": config.auto_water_time,
+        "duration": config.duration_minutes,
+        "max_temp": config.max_temperature,
+        "min_humidity": config.min_humidity,
+        "auto_mode": config.auto_mode,
+        "solenoid_open": config.solenoid_open
+    })
+
+@app.route('/api/report')
+@jwt_required()
+def api_report():
+    current_user = get_jwt_identity()
+    if current_user['role'] != 'owner':
+        return jsonify({'ok': False, 'error': 'Owners only'}), 403
+
+    # Get last 30 days readings
+    from datetime import timedelta
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    readings = SensorReading.query.filter(SensorReading.timestamp >= cutoff).order_by(SensorReading.timestamp.desc()).all()
+
+    output = io.StringIO()
+    output.write("Timestamp,Moisture,Temperature,Humidity,Light\n")
+    for r in readings:
+        output.write(f"{r.timestamp},{r.moisture},{r.temperature},{r.humidity},{r.light}\n")
+
+    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=farmlink_report.csv"})
+
 # ─── REGISTRATION ─────────────────────────────────────────────────────────
 
 @app.route('/api/register', methods=['POST'])
@@ -478,15 +542,16 @@ def register():
     email    = data.get('email')
     fullname = data.get('fullname')
     password = data.get('password')
+    role     = data.get('role')  # Add this
 
-    if not email or not fullname or not password:
+    if not email or not fullname or not password or not role:
         return jsonify({'ok': False, 'error': 'Missing required fields'}), 400
+
+    if role not in ['sakada', 'owner']:
+        return jsonify({'ok': False, 'error': 'Invalid role'}), 400
 
     if User.query.filter_by(email=email).first():
         return jsonify({'ok': False, 'error': 'Email already registered'}), 409
-
-    # Force sakada for public registration
-    role = 'sakada'
 
     hashed_pw = generate_password_hash(password)
     new_user = User(
@@ -510,7 +575,7 @@ def register():
 
     return jsonify({
         'ok': True,
-        'message': 'Registered successfully',
+        'message': 'Registered successfully' + (' — access code sent to email' if role == 'owner' else ''),
         'role': role
     }), 201
 
