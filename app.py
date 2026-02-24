@@ -4,7 +4,7 @@ import time
 import random
 import string
 import os
-import resend
+#import resend
 import io
 from flask import Flask, jsonify, request
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -53,7 +53,7 @@ app.config['MAIL_DEBUG']        = True
 mail = Mail(app)
 
 # ─── RESEND CONFIG ────────────────────────────────────────────────────────
-resend.api_key = os.environ.get('RESEND_API_KEY')
+#resend.api_key = os.environ.get('RESEND_API_KEY')
 
 # ─── JWT CONFIG ───────────────────────────────────────────────────────────
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key-please-change-this-in-production')
@@ -181,60 +181,60 @@ def send_access_code_email(recipient_email, access_code):
     #        print("[EMAIL] RESEND_API_KEY missing on Render – skipping send")
     #        return False
 
+#        try:
+#            params = {
+#                "from": "FarmLink <onboarding@resend.dev>",  # shared domain
+#                "to": [recipient_email],
+#                "subject": "Your FarmLink Access Code",
+#                "text": f"""
+#Dear user,
+
+#Your access code is: {access_code}
+
+#Use this code when logging in or verifying your account.
+#Keep it secure — do not share.
+
+#Best regards,
+#FarmLink Team
+#                """.strip()
+#            }
+
+#            email_resp = resend.Emails.send(params)
+#            print(f"[EMAIL SUCCESS via Resend] to {recipient_email} - ID: {email_resp.get('id')}")
+#            return True
+
+#        except Exception as e:
+#            print(f"[EMAIL FAILURE via Resend] {str(e)}")
+#            return False
+
+    def send_access_code_email(recipient_email, access_code):
         try:
-            params = {
-                "from": "FarmLink <onboarding@resend.dev>",  # shared domain
-                "to": [recipient_email],
-                "subject": "Your FarmLink Access Code",
-                "text": f"""
-Dear user,
-
-Your access code is: {access_code}
-
-Use this code when logging in or verifying your account.
-Keep it secure — do not share.
-
-Best regards,
-FarmLink Team
-                """.strip()
-            }
-
-            email_resp = resend.Emails.send(params)
-            print(f"[EMAIL SUCCESS via Resend] to {recipient_email} - ID: {email_resp.get('id')}")
-            return True
-
-        except Exception as e:
-            print(f"[EMAIL FAILURE via Resend] {str(e)}")
-            return False
-
-    #else:
-        # ─── Gmail SMTP (local development) ───────────────────────────────────
-        try:
-            print(f"[EMAIL DEBUG local] Attempting to send to {recipient_email} with code {access_code}")
+            print(f"[EMAIL] Sending to {recipient_email}")
             msg = Message(
                 subject="Your FarmLink Access Code",
+                sender=('FarmLink', 'farmlinktech.ph@gmail.com'),  # shows as FarmLink
                 recipients=[recipient_email],
                 body=f"""
-Dear user,
+    Dear user,
 
-Your access code is: {access_code}
+    Your access code is: {access_code}
 
-Use this code when logging in or verifying your account.
-Keep it secure — do not share.
+    Use this when logging in as Owner.
+    Keep it secure — do not share.
 
-Best regards,
-FarmLink Team
+    Best regards,
+    FarmLink Team
                 """.strip()
             )
             mail.send(msg)
-            print(f"[EMAIL SUCCESS local Gmail] Sent to {recipient_email}")
+            print(f"[EMAIL SUCCESS via Gmail] Sent to {recipient_email}")
             return True
         except Exception as e:
+            print("[EMAIL FAILURE via Gmail]")
             import traceback
-            print("[EMAIL CRITICAL FAILURE local]")
             print(traceback.format_exc())
             return False
-
+    
 # ─── SERIAL WORKER ────────────────────────────────────────────────────────
 
 def serial_worker():
@@ -426,38 +426,54 @@ def debug_env():
 @jwt_required()
 def api_settings():
     current_user = get_jwt_identity()
+    
+    # Debug logging – check Render logs after request
+    print("[SETTINGS] Request from user:", current_user)
+    print("[SETTINGS] Method:", request.method)
+    print("[SETTINGS] Token claims:", current_user)
+
+    # Fetch config (single row)
     config = PalayanConfig.query.first()
     if not config:
-        return jsonify({"ok": False, "message": "No configuration"}), 500
+        return jsonify({"ok": False, "error": "No configuration found"}), 500
 
     if request.method == 'POST':
-        if current_user['role'] != 'owner':
-            return jsonify({'ok': False, 'error': 'Owners only'}), 403
+        # Only owners can edit
+        if current_user.get('role') != 'owner':
+            return jsonify({'ok': False, 'error': 'Only owners can edit settings'}), 403
+
         data = request.get_json()
-        config.min_moisture = data.get('threshold_zoneA_min', config.min_moisture)
-        config.max_moisture = data.get('threshold_zoneA_max', config.max_moisture)
-        # Add Zone B if you expand model, else ignore or add fields
+        if not data:
+            return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
+
+        # Update fields (add more as your model grows)
+        config.threshold_zoneA_min = data.get('threshold_zoneA_min', config.threshold_zoneA_min)
+        config.threshold_zoneA_max = data.get('threshold_zoneA_max', config.threshold_zoneA_max)
+        config.threshold_zoneB_min = data.get('threshold_zoneB_min', config.threshold_zoneB_min)
+        config.threshold_zoneB_max = data.get('threshold_zoneB_max', config.threshold_zoneB_max)
         config.auto_water_time = data.get('auto_water_time', config.auto_water_time)
-        config.duration_minutes = data.get('duration', config.duration_minutes)
-        config.max_temperature = data.get('max_temp', config.max_temperature)
+        config.duration = data.get('duration', config.duration)
+        config.max_temp = data.get('max_temp', config.max_temp)
         config.min_humidity = data.get('min_humidity', config.min_humidity)
         config.auto_mode = data.get('auto_mode', config.auto_mode)
-        db.session.commit()
-        return jsonify({"ok": True, "message": "Settings updated"})
 
-    # GET
+        db.session.commit()
+        return jsonify({"ok": True, "message": "Settings saved successfully"})
+
+    # GET: allowed for all logged-in users (sakada = view only)
     return jsonify({
         "ok": True,
-        "threshold_zoneA_min": config.min_moisture,
-        "threshold_zoneA_max": config.max_moisture,
-        "threshold_zoneB_min": 35,  # Hardcode or add to model
-        "threshold_zoneB_max": 65,
+        "threshold_zoneA_min": config.threshold_zoneA_min,
+        "threshold_zoneA_max": config.threshold_zoneA_max,
+        "threshold_zoneB_min": config.threshold_zoneB_min,
+        "threshold_zoneB_max": config.threshold_zoneB_max,
         "auto_water_time": config.auto_water_time,
-        "duration": config.duration_minutes,
-        "max_temp": config.max_temperature,
+        "duration": config.duration,
+        "max_temp": config.max_temp,
         "min_humidity": config.min_humidity,
         "auto_mode": config.auto_mode,
-        "solenoid_open": config.solenoid_open
+        "solenoid_open": config.solenoid_open,
+        "read_only": current_user.get('role') != 'owner'  # frontend hint
     })
 
 @app.route('/api/report')
