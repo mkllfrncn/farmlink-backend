@@ -35,7 +35,9 @@ else:
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_recycle': 3600,
-    'pool_pre_ping': True
+    'pool_pre_ping': True,
+    'pool_size': 5,
+    'max_overflow': 10
 }
 
 db = SQLAlchemy(app)
@@ -55,6 +57,22 @@ mail = Mail(app)
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key-please-change-this-in-production')
 jwt = JWTManager(app)
 
+# Custom JWT callbacks to debug 422 issues
+@jwt.invalid_token_loader
+def invalid_token_callback(error):
+    print("[JWT] Invalid token error:", error)
+    return jsonify({'ok': False, 'error': 'Invalid token - please log in again'}), 401
+
+@jwt.unauthorized_loader
+def unauthorized_callback(error):
+    print("[JWT] Unauthorized:", error)
+    return jsonify({'ok': False, 'error': 'Missing or invalid Authorization header'}), 401
+
+@jwt.expired_token_loader
+def expired_token_callback(jwt_header, jwt_payload):
+    print("[JWT] Token expired:", jwt_payload)
+    return jsonify({'ok': False, 'error': 'Token expired - please log in again'}), 401
+
 # ─── MODELS ───────────────────────────────────────────────────────────────
 
 class User(db.Model):
@@ -62,7 +80,7 @@ class User(db.Model):
     email         = db.Column(db.String(120), unique=True, nullable=False)
     fullname      = db.Column(db.String(100), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role          = db.Column(db.String(20), default="sakada")  # sakada or owner
+    role          = db.Column(db.String(20), default="sakada")
     verified      = db.Column(db.Boolean, default=False)
     access_code   = db.Column(db.String(30))
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
@@ -130,7 +148,7 @@ class IrrigationEvent(db.Model):
     id                = db.Column(db.Integer, primary_key=True)
     start_time        = db.Column(db.DateTime, default=datetime.utcnow)
     duration_minutes  = db.Column(db.Integer, nullable=False)
-    triggered_by      = db.Column(db.String(20), default="auto")  # auto, manual, user
+    triggered_by      = db.Column(db.String(20), default="auto")
     user_id           = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     solenoid_opened   = db.Column(db.Boolean, default=True)
     notes             = db.Column(db.Text, nullable=True)
@@ -449,13 +467,14 @@ def debug_env():
 @app.route('/api/settings', methods=['GET', 'POST'])
 @jwt_required()
 def api_settings():
+    print("[SETTINGS] Request received - checking JWT")
     try:
         current_user = get_jwt_identity()
-        print("[SETTINGS DEBUG] JWT identity:", current_user)
-        print("[SETTINGS DEBUG] Method:", request.method)
+        print("[SETTINGS] JWT identity:", current_user)
+        print("[SETTINGS] Method:", request.method)
     except Exception as jwt_err:
-        print("[JWT ERROR in settings]", str(jwt_err))
-        return jsonify({'ok': False, 'error': 'Invalid or expired token'}), 401
+        print("[JWT VALIDATION ERROR in settings]", str(jwt_err))
+        return jsonify({'ok': False, 'error': 'Invalid or expired token - please log in again'}), 401
 
     config = PalayanConfig.query.first()
     if not config:
