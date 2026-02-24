@@ -507,18 +507,18 @@ def register():
         return jsonify({'ok': False, 'error': 'Invalid role. Must be "sakada" or "owner"'}), 400
 
     # Owner must provide access_code
-    if role == 'owner' and not access_code:
-        return jsonify({'ok': False, 'error': 'Access code is required for owner registration'}), 400
+    #if role == 'owner' and not access_code:
+    #    return jsonify({'ok': False, 'error': 'Access code is required for owner registration'}), 400
 
     # Check email already exists
     if User.query.filter_by(email=email).first():
         return jsonify({'ok': False, 'error': 'Email already registered'}), 409
 
     # Validate access code for owner
-    if role == 'owner':
-        owner_record = User.query.filter_by(access_code=access_code, role='owner').first()
-        if not owner_record:
-            return jsonify({'ok': False, 'error': 'Invalid or expired access code'}), 400
+    #if role == 'owner':
+     #   owner_record = User.query.filter_by(access_code=access_code, role='owner').first()
+     #   if not owner_record:
+     #       return jsonify({'ok': False, 'error': 'Invalid or expired access code'}), 400
         
         # Optional: make code one-time use (uncomment if desired)
         # owner_record.access_code = None
