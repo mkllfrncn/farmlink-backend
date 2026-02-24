@@ -425,20 +425,19 @@ def debug_env():
 @app.route('/api/settings', methods=['GET', 'POST'])
 @jwt_required()
 def api_settings():
-    current_user = get_jwt_identity()
-    
-    # Debug logging – check Render logs after request
-    print("[SETTINGS] Request from user:", current_user)
-    print("[SETTINGS] Method:", request.method)
-    print("[SETTINGS] Token claims:", current_user)
+    try:
+        current_user = get_jwt_identity()
+        print("[SETTINGS DEBUG] JWT identity:", current_user)  # log token content
+        print("[SETTINGS DEBUG] Method:", request.method)
+    except Exception as jwt_err:
+        print("[JWT ERROR in settings]", str(jwt_err))
+        return jsonify({'ok': False, 'error': 'Invalid or expired token'}), 401
 
-    # Fetch config (single row)
     config = PalayanConfig.query.first()
     if not config:
         return jsonify({"ok": False, "error": "No configuration found"}), 500
 
     if request.method == 'POST':
-        # Only owners can edit
         if current_user.get('role') != 'owner':
             return jsonify({'ok': False, 'error': 'Only owners can edit settings'}), 403
 
@@ -446,7 +445,7 @@ def api_settings():
         if not data:
             return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
 
-        # Update fields (add more as your model grows)
+        # Update fields (match your model keys)
         config.threshold_zoneA_min = data.get('threshold_zoneA_min', config.threshold_zoneA_min)
         config.threshold_zoneA_max = data.get('threshold_zoneA_max', config.threshold_zoneA_max)
         config.threshold_zoneB_min = data.get('threshold_zoneB_min', config.threshold_zoneB_min)
@@ -458,9 +457,9 @@ def api_settings():
         config.auto_mode = data.get('auto_mode', config.auto_mode)
 
         db.session.commit()
-        return jsonify({"ok": True, "message": "Settings saved successfully"})
+        return jsonify({"ok": True, "message": "Settings saved"})
 
-    # GET: allowed for all logged-in users (sakada = view only)
+    # GET: allow all logged-in users
     return jsonify({
         "ok": True,
         "threshold_zoneA_min": config.threshold_zoneA_min,
@@ -473,7 +472,7 @@ def api_settings():
         "min_humidity": config.min_humidity,
         "auto_mode": config.auto_mode,
         "solenoid_open": config.solenoid_open,
-        "read_only": current_user.get('role') != 'owner'  # frontend hint
+        "read_only": current_user.get('role') != 'owner'
     })
 
 @app.route('/api/report')
