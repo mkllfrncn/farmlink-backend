@@ -4,22 +4,22 @@ import time
 import random
 import string
 import os
-#import resend
 import io
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 from flask_mail import Mail, Message
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-# import serial   # Uncomment and install if needed locally; disable on Render
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────
 SERIAL_ENABLED = False          # Set to True only for local dev with serial port
 SERIAL_PORT    = "COM6"         # Only used when SERIAL_ENABLED=True
 BAUD_RATE      = 9600
 SERIAL_TIMEOUT_SEC = 0.2
+
+print("[APP START] File loaded - no crash on import")
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -49,11 +49,7 @@ app.config['MAIL_PASSWORD']     = 'qhfbxiirttjzkrzd'
 app.config['MAIL_DEFAULT_SENDER'] = 'farmlinktech.ph@gmail.com'
 app.config['MAIL_DEBUG']        = True
 
-#os.environ.get('MAIL_APP_PASSWORD'
 mail = Mail(app)
-
-# ─── RESEND CONFIG ────────────────────────────────────────────────────────
-#resend.api_key = os.environ.get('RESEND_API_KEY')
 
 # ─── JWT CONFIG ───────────────────────────────────────────────────────────
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key-please-change-this-in-production')
@@ -172,69 +168,33 @@ def add_log(title, message, log_type="info", user_email=None):
     print(f"[LOG ADDED] {title} - {message}")
 
 def send_access_code_email(recipient_email, access_code):
-    # Detect if running on Render
-    #is_render = 'RENDER' in os.environ or 'RENDER_SERVICE_ID' in os.environ
+    try:
+        print(f"[EMAIL] Sending to {recipient_email}")
+        msg = Message(
+            subject="Your FarmLink Access Code",
+            sender=('FarmLink', 'farmlinktech.ph@gmail.com'),
+            recipients=[recipient_email],
+            body=f"""
+Dear user,
 
-    #if is_render:
-        # ─── Resend API (production on Render) ────────────────────────────────
-    #    if not resend.api_key:
-    #        print("[EMAIL] RESEND_API_KEY missing on Render – skipping send")
-    #        return False
+Your access code is: {access_code}
 
-#        try:
-#            params = {
-#                "from": "FarmLink <onboarding@resend.dev>",  # shared domain
-#                "to": [recipient_email],
-#                "subject": "Your FarmLink Access Code",
-#                "text": f"""
-#Dear user,
+Use this when logging in as Owner.
+Keep it secure — do not share.
 
-#Your access code is: {access_code}
+Best regards,
+FarmLink Team
+            """.strip()
+        )
+        mail.send(msg)
+        print(f"[EMAIL SUCCESS via Gmail] Sent to {recipient_email}")
+        return True
+    except Exception as e:
+        print("[EMAIL FAILURE via Gmail]")
+        import traceback
+        print(traceback.format_exc())
+        return False
 
-#Use this code when logging in or verifying your account.
-#Keep it secure — do not share.
-
-#Best regards,
-#FarmLink Team
-#                """.strip()
-#            }
-
-#            email_resp = resend.Emails.send(params)
-#            print(f"[EMAIL SUCCESS via Resend] to {recipient_email} - ID: {email_resp.get('id')}")
-#            return True
-
-#        except Exception as e:
-#            print(f"[EMAIL FAILURE via Resend] {str(e)}")
-#            return False
-
-    def send_access_code_email(recipient_email, access_code):
-        try:
-            print(f"[EMAIL] Sending to {recipient_email}")
-            msg = Message(
-                subject="Your FarmLink Access Code",
-                sender=('FarmLink', 'farmlinktech.ph@gmail.com'),  # shows as FarmLink
-                recipients=[recipient_email],
-                body=f"""
-    Dear user,
-
-    Your access code is: {access_code}
-
-    Use this when logging in as Owner.
-    Keep it secure — do not share.
-
-    Best regards,
-    FarmLink Team
-                """.strip()
-            )
-            mail.send(msg)
-            print(f"[EMAIL SUCCESS via Gmail] Sent to {recipient_email}")
-            return True
-        except Exception as e:
-            print("[EMAIL FAILURE via Gmail]")
-            import traceback
-            print(traceback.format_exc())
-            return False
-    
 # ─── SERIAL WORKER ────────────────────────────────────────────────────────
 
 def serial_worker():
@@ -245,7 +205,7 @@ def serial_worker():
     print(f"[SERIAL] Starting on {SERIAL_PORT} @ {BAUD_RATE} baud")
 
     try:
-        import serial  # Lazy import to avoid issues on Render
+        import serial
         ser = serial.Serial(
             port=SERIAL_PORT,
             baudrate=BAUD_RATE,
@@ -314,8 +274,72 @@ def serial_worker():
     except Exception as e:
         print(f"[SERIAL CRASH] {e}")
 
-# Start serial in background (only if enabled)
-threading.Thread(target=serial_worker, daemon=True).start()
+# Start serial only if enabled
+if SERIAL_ENABLED:
+    threading.Thread(target=serial_worker, daemon=True).start()
+
+# ─── STARTUP DEBUG & TABLES ───────────────────────────────────────────────
+
+print("[APP START] Entering startup block")
+try:
+    with app.app_context():
+        print("[STARTUP] Creating tables...")
+        db.create_all()
+        print("[STARTUP] Tables created or already exist")
+
+        # Seed default PalayanConfig if missing
+        if not PalayanConfig.query.first():
+            default = PalayanConfig()
+            db.session.add(default)
+            db.session.commit()
+            print("[STARTUP] Created default PalayanConfig")
+        else:
+            print("[STARTUP] PalayanConfig already exists")
+
+        # Seed initial owner account (only if no owners exist)
+        if not User.query.filter_by(role='owner').first():
+            print("[STARTUP] No owner account found → creating default owner")
+
+            owner_email    = os.environ.get('DEFAULT_OWNER_EMAIL',    'owner@farmlink.ph')
+            owner_fullname = os.environ.get('DEFAULT_OWNER_NAME',     'Initial Farm Owner')
+            owner_password = os.environ.get('DEFAULT_OWNER_PASSWORD', 'BennyLantacon')
+            owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-INIT-413')
+
+            if owner_password == 'ChangeThis123Secure!':
+                print("[SEED WARNING] Using fallback password → HIGHLY RECOMMENDED: set DEFAULT_OWNER_PASSWORD env var!")
+
+            hashed_pw = generate_password_hash(owner_password)
+
+            default_owner = User(
+                email         = owner_email,
+                fullname      = owner_fullname,
+                password_hash = hashed_pw,
+                role          = 'owner',
+                access_code   = owner_code,
+                verified      = True,
+                created_at    = datetime.utcnow()
+            )
+
+            db.session.add(default_owner)
+            db.session.commit()
+
+            print("[STARTUP] Default owner created successfully:")
+            print(f"  Email:       {owner_email}")
+            print(f"  Full name:   {owner_fullname}")
+            print(f"  Access code: {owner_code}")
+            print("  Password:    (hashed from env var or fallback)")
+            print("  → Log in as owner using these credentials.")
+        else:
+            print("[STARTUP] At least one owner already exists → skipping owner seed")
+
+        print("[STARTUP] Completed successfully")
+
+except Exception as startup_err:
+    print("[STARTUP CRASH] Failed during startup")
+    print("[STARTUP CRASH] Error:", str(startup_err))
+    import traceback
+    print("[STARTUP CRASH] Full traceback:")
+    print(traceback.format_exc())
 
 # ─── API ROUTES ───────────────────────────────────────────────────────────
 
@@ -351,11 +375,11 @@ def api_status():
         return jsonify({"lora": False, "mcu1": False, "mcu2": False, "auto_mode": False})
 
     delta = (datetime.utcnow() - config.last_updated).total_seconds()
-    is_online = delta < 60  # Online if updated in last minute
+    is_online = delta < 60
 
     return jsonify({
         "lora": is_online,
-        "mcu1": is_online,  # Assume same for now
+        "mcu1": is_online,
         "mcu2": is_online,
         "auto_mode": config.auto_mode
     })
@@ -427,7 +451,7 @@ def debug_env():
 def api_settings():
     try:
         current_user = get_jwt_identity()
-        print("[SETTINGS DEBUG] JWT identity:", current_user)  # log token content
+        print("[SETTINGS DEBUG] JWT identity:", current_user)
         print("[SETTINGS DEBUG] Method:", request.method)
     except Exception as jwt_err:
         print("[JWT ERROR in settings]", str(jwt_err))
@@ -445,7 +469,6 @@ def api_settings():
         if not data:
             return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
 
-        # Update fields (match your model keys)
         config.threshold_zoneA_min = data.get('threshold_zoneA_min', config.threshold_zoneA_min)
         config.threshold_zoneA_max = data.get('threshold_zoneA_max', config.threshold_zoneA_max)
         config.threshold_zoneB_min = data.get('threshold_zoneB_min', config.threshold_zoneB_min)
@@ -459,7 +482,6 @@ def api_settings():
         db.session.commit()
         return jsonify({"ok": True, "message": "Settings saved"})
 
-    # GET: allow all logged-in users
     return jsonify({
         "ok": True,
         "threshold_zoneA_min": config.threshold_zoneA_min,
@@ -482,7 +504,6 @@ def api_report():
     if current_user['role'] != 'owner':
         return jsonify({'ok': False, 'error': 'Owners only'}), 403
 
-    # Get last 30 days readings
     from datetime import timedelta
     cutoff = datetime.utcnow() - timedelta(days=30)
     readings = SensorReading.query.filter(SensorReading.timestamp >= cutoff).order_by(SensorReading.timestamp.desc()).all()
@@ -507,9 +528,8 @@ def register():
     fullname    = data.get('fullname')
     password    = data.get('password')
     role        = data.get('role', 'sakada')
-    access_code = data.get('access_code')  # required only for owner
+    access_code = data.get('access_code')
 
-    # Basic field validation
     if not all([email, fullname, password]):
         missing = [k for k, v in {'email': email, 'fullname': fullname, 'password': password}.items() if not v]
         return jsonify({
@@ -517,29 +537,12 @@ def register():
             'error': f'Missing required fields: {", ".join(missing)}'
         }), 400
 
-    # Validate role
     if role not in ['sakada', 'owner']:
         return jsonify({'ok': False, 'error': 'Invalid role. Must be "sakada" or "owner"'}), 400
 
-    # Owner must provide access_code
-    #if role == 'owner' and not access_code:
-    #    return jsonify({'ok': False, 'error': 'Access code is required for owner registration'}), 400
-
-    # Check email already exists
     if User.query.filter_by(email=email).first():
         return jsonify({'ok': False, 'error': 'Email already registered'}), 409
 
-    # Validate access code for owner
-    #if role == 'owner':
-     #   owner_record = User.query.filter_by(access_code=access_code, role='owner').first()
-     #   if not owner_record:
-     #       return jsonify({'ok': False, 'error': 'Invalid or expired access code'}), 400
-        
-        # Optional: make code one-time use (uncomment if desired)
-        # owner_record.access_code = None
-        # db.session.commit()
-
-    # Create the user
     hashed_pw = generate_password_hash(password)
 
     new_user = User(
@@ -550,15 +553,11 @@ def register():
         verified=False
     )
 
-    # Generate and send access code ONLY if registering a NEW owner
-    # (not when using an existing code to register)
     sent_access_code = None
     if role == 'owner':
-        # Generate a new access code for this new owner account
         sent_access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
         new_user.access_code = sent_access_code
         
-        # Send email
         success = send_access_code_email(email, sent_access_code)
         if not success:
             print(f"[WARNING] Failed to send access code email to {email}")
@@ -581,7 +580,6 @@ def register():
         db.session.rollback()
         print(f"[REGISTER ERROR] Database commit failed: {str(e)}")
         return jsonify({'ok': False, 'error': 'Failed to create account. Please try again.'}), 500
-    
 
 @app.route('/api/resend-owner-code', methods=['POST'])
 def resend_owner_code():
@@ -591,11 +589,10 @@ def resend_owner_code():
     if not email:
         return jsonify({'ok': False, 'error': 'Email required'}), 400
 
-    user = User.query.filter_by(email=email).first()  # Removed role='owner' check
+    user = User.query.filter_by(email=email).first()
     if not user:
         return jsonify({'ok': False, 'error': 'No account found with this email'}), 404
 
-    # If no code exists, generate a new one (for new owners)
     if not user.access_code:
         user.access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
         db.session.commit()
@@ -615,8 +612,6 @@ def resend_owner_code():
             'ok': False,
             'error': 'Failed to send access code email'
         }), 500
-    
-# ─── LOGIN ────────────────────────────────────────────────────────────────
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -640,16 +635,11 @@ def login():
         if not user.access_code or admincode != user.access_code:
             return jsonify({'ok': False, 'error': 'Invalid or missing access code'}), 403
         
-        # Mark as verified on first successful owner login
         if not user.verified:
             user.verified = True
             db.session.commit()
 
-        # ─── SEND EMAIL ON SUCCESSFUL OWNER LOGIN ────────────────────────
-        success = send_access_code_email(
-            recipient_email = email,
-            access_code     = user.access_code
-        )
+        success = send_access_code_email(email, user.access_code)
         if success:
             print(f"[LOGIN EMAIL] Access code re-sent to owner: {email}")
         else:
@@ -665,3 +655,11 @@ def login():
         'role': user.role,
         'message': 'Login successful' + (' — access code re-sent to email' if role == 'owner' else '')
     }), 200
+
+# Keep-alive debug thread (helps prevent idle timeout kills)
+def keep_alive():
+    while True:
+        print("[KEEP ALIVE] Server still running - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        time.sleep(60)
+
+threading.Thread(target=keep_alive, daemon=True).start()
