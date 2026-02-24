@@ -13,6 +13,9 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 
+print(f"[START] PORT from env: {os.environ.get('PORT', 'NOT SET')}")
+print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
+
 # ─── CONFIG ───────────────────────────────────────────────────────────────
 SERIAL_ENABLED = False          # Set to True only for local dev with serial port
 SERIAL_PORT    = "COM6"         # Only used when SERIAL_ENABLED=True
@@ -23,6 +26,10 @@ print("[APP START] File loaded - no crash on import")
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "healthy", "port": os.environ.get('PORT')}), 200
 
 # ─── DATABASE CONFIGURATION ───────────────────────────────────────────────
 db_uri = os.environ.get('DATABASE_URL')
@@ -84,6 +91,9 @@ class User(db.Model):
     verified      = db.Column(db.Boolean, default=False)
     access_code   = db.Column(db.String(30))
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # ─── NEW FIELD FOR AVATAR ─────────────────────────────────────────────
+    avatar_base64 = db.Column(db.Text, nullable=True)
 
     def __repr__(self):
         return f"<User {self.email}>"
@@ -444,6 +454,34 @@ def update_profile():
 
     return jsonify({"ok": True, "message": "Profile updated", "fullname": fullname})
 
+@app.route('/api/update_avatar', methods=['POST', 'OPTIONS'])
+@jwt_required()
+def update_avatar():
+    if request.method == 'OPTIONS':
+        return jsonify({}), 200  # Handle CORS preflight
+
+    current_email = get_jwt_identity()
+    user = User.query.filter_by(email=current_email).first()
+    if not user:
+        return jsonify({"ok": False, "error": "User not found"}), 404
+
+    data = request.get_json()
+    if not data or 'avatar' not in data:
+        return jsonify({"ok": False, "error": "Missing 'avatar' field"}), 400
+
+    avatar_base64 = data['avatar']
+    if not isinstance(avatar_base64, str) or not avatar_base64.startswith('data:image'):
+        return jsonify({"ok": False, "error": "Invalid image format"}), 400
+
+    # Optional: prevent huge images crashing the DB
+    if len(avatar_base64) > 2_000_000:  # roughly 1.5MB after base64 overhead
+        return jsonify({"ok": False, "error": "Image too large (max ~1.5MB)"}), 413
+
+    user.avatar_base64 = avatar_base64
+    db.session.commit()
+
+    return jsonify({"ok": True, "message": "Avatar updated"})
+
 @app.route('/api/access-codes', methods=['GET'])
 @jwt_required()
 def get_access_codes():
@@ -688,3 +726,20 @@ def keep_alive():
         time.sleep(60)
 
 threading.Thread(target=keep_alive, daemon=True).start()
+
+@app.route('/api/me', methods=['GET'])
+@jwt_required()
+def get_current_user():
+    current_email = get_jwt_identity()
+    user = User.query.filter_by(email=current_email).first()
+    
+    if not user:
+        return jsonify({"ok": False, "error": "User not found"}), 404
+
+    return jsonify({
+        "ok": True,
+        "email": user.email,
+        "fullname": user.fullname,
+        "role": user.role,
+        "avatar": user.avatar_base64   # will be null if not set
+    })
