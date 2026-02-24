@@ -57,7 +57,7 @@ mail = Mail(app)
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key-please-change-this-in-production')
 jwt = JWTManager(app)
 
-# Custom JWT callbacks to debug 422 issues
+# JWT error callbacks (logs why token fails)
 @jwt.invalid_token_loader
 def invalid_token_callback(error):
     print("[JWT] Invalid token error:", error)
@@ -405,8 +405,11 @@ def api_status():
 @app.route('/api/logs', methods=['GET'])
 @jwt_required()
 def get_logs():
-    current_user = get_jwt_identity()
-    if current_user['role'] != 'owner':
+    current_email = get_jwt_identity()
+    current_user = User.query.filter_by(email=current_email).first()
+    if not current_user:
+        return jsonify({'ok': False, 'error': 'User not found'}), 404
+    if current_user.role != 'owner':
         return jsonify({'ok': False, 'error': 'Owners only'}), 403
 
     log_entries = Log.query.order_by(Log.timestamp.desc()).limit(50).all()
@@ -426,19 +429,17 @@ def get_logs():
 @app.route('/api/update_profile', methods=['POST'])
 @jwt_required()
 def update_profile():
-    current_user = get_jwt_identity()
+    current_email = get_jwt_identity()
+    current_user = User.query.filter_by(email=current_email).first()
+    if not current_user:
+        return jsonify({"ok": False, "error": "User not found"}), 404
+
     data = request.get_json()
     fullname = data.get('fullname')
-    email = current_user['email']
-
     if not fullname:
         return jsonify({"ok": False, "error": "Full name required"}), 400
 
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        return jsonify({"ok": False, "error": "User not found"}), 404
-
-    user.fullname = fullname
+    current_user.fullname = fullname
     db.session.commit()
 
     return jsonify({"ok": True, "message": "Profile updated", "fullname": fullname})
@@ -446,8 +447,11 @@ def update_profile():
 @app.route('/api/access-codes', methods=['GET'])
 @jwt_required()
 def get_access_codes():
-    current_user = get_jwt_identity()
-    if current_user['role'] != 'owner':
+    current_email = get_jwt_identity()
+    current_user = User.query.filter_by(email=current_email).first()
+    if not current_user:
+        return jsonify({'ok': False, 'error': 'User not found'}), 404
+    if current_user.role != 'owner':
         return jsonify({'ok': False, 'error': 'Owners only'}), 403
 
     users = User.query.filter_by(role='owner').all()
@@ -467,21 +471,19 @@ def debug_env():
 @app.route('/api/settings', methods=['GET', 'POST'])
 @jwt_required()
 def api_settings():
-    print("[SETTINGS] Request received - checking JWT")
-    try:
-        current_user = get_jwt_identity()
-        print("[SETTINGS] JWT identity:", current_user)
-        print("[SETTINGS] Method:", request.method)
-    except Exception as jwt_err:
-        print("[JWT VALIDATION ERROR in settings]", str(jwt_err))
-        return jsonify({'ok': False, 'error': 'Invalid or expired token - please log in again'}), 401
+    current_email = get_jwt_identity()
+    current_user = User.query.filter_by(email=current_email).first()
+    if not current_user:
+        return jsonify({'ok': False, 'error': 'User not found'}), 404
+
+    print("[SETTINGS] User:", {'email': current_user.email, 'role': current_user.role})
 
     config = PalayanConfig.query.first()
     if not config:
         return jsonify({"ok": False, "error": "No configuration found"}), 500
 
     if request.method == 'POST':
-        if current_user.get('role') != 'owner':
+        if current_user.role != 'owner':
             return jsonify({'ok': False, 'error': 'Only owners can edit settings'}), 403
 
         data = request.get_json()
@@ -513,14 +515,17 @@ def api_settings():
         "min_humidity": config.min_humidity,
         "auto_mode": config.auto_mode,
         "solenoid_open": config.solenoid_open,
-        "read_only": current_user.get('role') != 'owner'
+        "read_only": current_user.role != 'owner'
     })
 
 @app.route('/api/report')
 @jwt_required()
 def api_report():
-    current_user = get_jwt_identity()
-    if current_user['role'] != 'owner':
+    current_email = get_jwt_identity()
+    current_user = User.query.filter_by(email=current_email).first()
+    if not current_user:
+        return jsonify({'ok': False, 'error': 'User not found'}), 404
+    if current_user.role != 'owner':
         return jsonify({'ok': False, 'error': 'Owners only'}), 403
 
     from datetime import timedelta
@@ -664,7 +669,7 @@ def login():
         else:
             print(f"[LOGIN EMAIL] Failed to send to owner: {email}")
 
-    token = create_access_token(identity={'email': user.email, 'role': user.role})
+    token = create_access_token(identity=user.email)  # FIXED: string email
 
     return jsonify({
         'ok': True,
