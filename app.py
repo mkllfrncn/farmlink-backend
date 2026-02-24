@@ -339,8 +339,8 @@ with app.app_context():
 
             owner_email    = os.environ.get('DEFAULT_OWNER_EMAIL',    'owner@farmlink.ph')
             owner_fullname = os.environ.get('DEFAULT_OWNER_NAME',     'Initial Farm Owner')
-            owner_password = os.environ.get('DEFAULT_OWNER_PASSWORD', 'ChangeThis123Secure!')
-            owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-INIT-001')
+            owner_password = os.environ.get('DEFAULT_OWNER_PASSWORD', 'BennyLantacon')
+            owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-INIT-413')
 
             if owner_password == 'ChangeThis123Secure!':
                 print("[SEED WARNING] Using fallback password → HIGHLY RECOMMENDED: set DEFAULT_OWNER_PASSWORD env var!")
