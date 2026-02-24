@@ -631,12 +631,14 @@ def resend_owner_code():
     if not email:
         return jsonify({'ok': False, 'error': 'Email required'}), 400
 
-    user = User.query.filter_by(email=email, role='owner').first()
+    user = User.query.filter_by(email=email).first()  # Removed role='owner' check
     if not user:
-        return jsonify({'ok': False, 'error': 'No owner account found with this email'}), 404
+        return jsonify({'ok': False, 'error': 'No account found with this email'}), 404
 
+    # If no code exists, generate a new one (for new owners)
     if not user.access_code:
-        return jsonify({'ok': False, 'error': 'No access code found for this account'}), 400
+        user.access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        db.session.commit()
 
     success = send_access_code_email(
         recipient_email = email,
@@ -646,12 +648,12 @@ def resend_owner_code():
     if success:
         return jsonify({
             'ok': True,
-            'message': 'Access code re-sent to your email'
+            'message': 'Access code sent to your email'
         }), 200
     else:
         return jsonify({
             'ok': False,
-            'error': 'Failed to send access code email. Please try again later.'
+            'error': 'Failed to send access code email'
         }), 500
     
 # ─── LOGIN ────────────────────────────────────────────────────────────────
