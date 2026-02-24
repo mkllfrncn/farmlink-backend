@@ -317,61 +317,6 @@ def serial_worker():
 # Start serial in background (only if enabled)
 threading.Thread(target=serial_worker, daemon=True).start()
 
-# ─── AUTO-CREATE TABLES & SEED ON MODULE LOAD ──────────────────────────────
-with app.app_context():
-    try:
-        print("[STARTUP] Creating tables if they don't exist...")
-        db.create_all()
-        print("[STARTUP] Tables created or already exist")
-
-        # Seed default PalayanConfig if missing
-        if not PalayanConfig.query.first():
-            default = PalayanConfig()
-            db.session.add(default)
-            db.session.commit()
-            print("[STARTUP] Created default PalayanConfig")
-        else:
-            print("[STARTUP] PalayanConfig already exists")
-
-        # ─── Seed initial owner account (only if no owners exist) ──────
-        if not User.query.filter_by(role='owner').first():
-            print("[STARTUP] No owner account found → creating default owner")
-
-            owner_email    = os.environ.get('DEFAULT_OWNER_EMAIL',    'owner@farmlink.ph')
-            owner_fullname = os.environ.get('DEFAULT_OWNER_NAME',     'Initial Farm Owner')
-            owner_password = os.environ.get('DEFAULT_OWNER_PASSWORD', 'BennyLantacon')
-            owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-INIT-413')
-
-            if owner_password == 'ChangeThis123Secure!':
-                print("[SEED WARNING] Using fallback password → HIGHLY RECOMMENDED: set DEFAULT_OWNER_PASSWORD env var!")
-
-            hashed_pw = generate_password_hash(owner_password)
-
-            default_owner = User(
-                email         = owner_email,
-                fullname      = owner_fullname,
-                password_hash = hashed_pw,
-                role          = 'owner',
-                access_code   = owner_code,
-                verified      = True,
-                created_at    = datetime.utcnow()
-            )
-
-            db.session.add(default_owner)
-            db.session.commit()
-
-            print("[STARTUP] Default owner created successfully:")
-            print(f"  Email:       {owner_email}")
-            print(f"  Full name:   {owner_fullname}")
-            print(f"  Access code: {owner_code}")
-            print( "  Password:    (hashed from env var or fallback)")
-            print( "  → Log in as owner using these credentials.")
-        else:
-            print("[STARTUP] At least one owner already exists → skipping owner seed")
-
-    except Exception as e:
-        print(f"[STARTUP ERROR] Failed during table creation or seeding: {str(e)}")
-
 # ─── API ROUTES ───────────────────────────────────────────────────────────
 
 @app.route("/api/data")
