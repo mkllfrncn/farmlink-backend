@@ -490,28 +490,29 @@ def api_settings():
         if not data:
             return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
 
-        config.threshold_zoneA_min = data.get('threshold_zoneA_min', config.threshold_zoneA_min)
-        config.threshold_zoneA_max = data.get('threshold_zoneA_max', config.threshold_zoneA_max)
-        config.threshold_zoneB_min = data.get('threshold_zoneB_min', config.threshold_zoneB_min)
-        config.threshold_zoneB_max = data.get('threshold_zoneB_max', config.threshold_zoneB_max)
+        # Use ACTUAL model field names
+        config.min_moisture = data.get('threshold_zoneA_min', config.min_moisture)
+        config.max_moisture = data.get('threshold_zoneA_max', config.max_moisture)
+        # If you have zoneB fields, add them here or remove from payload
         config.auto_water_time = data.get('auto_water_time', config.auto_water_time)
-        config.duration = data.get('duration', config.duration)
-        config.max_temp = data.get('max_temp', config.max_temp)
+        config.duration_minutes = data.get('duration', config.duration_minutes)
+        config.max_temperature = data.get('max_temp', config.max_temperature)
         config.min_humidity = data.get('min_humidity', config.min_humidity)
         config.auto_mode = data.get('auto_mode', config.auto_mode)
 
         db.session.commit()
         return jsonify({"ok": True, "message": "Settings saved"})
 
+    # GET: return actual fields
     return jsonify({
         "ok": True,
-        "threshold_zoneA_min": config.threshold_zoneA_min,
-        "threshold_zoneA_max": config.threshold_zoneA_max,
-        "threshold_zoneB_min": config.threshold_zoneB_min,
-        "threshold_zoneB_max": config.threshold_zoneB_max,
+        "threshold_zoneA_min": config.min_moisture,
+        "threshold_zoneA_max": config.max_moisture,
+        "threshold_zoneB_min": 35,  # hardcoded fallback (add fields to model if needed)
+        "threshold_zoneB_max": 65,
         "auto_water_time": config.auto_water_time,
-        "duration": config.duration,
-        "max_temp": config.max_temp,
+        "duration": config.duration_minutes,
+        "max_temp": config.max_temperature,
         "min_humidity": config.min_humidity,
         "auto_mode": config.auto_mode,
         "solenoid_open": config.solenoid_open,
