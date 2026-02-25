@@ -10,7 +10,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 from flask_mail import Mail, Message
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime, timezone
+from datetime import datetime
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from dotenv import load_dotenv
 from flask_migrate import Migrate
@@ -514,11 +514,19 @@ def api_alerts():
 @app.route("/api/status")
 @jwt_required(optional=True)
 def api_status():
-    now = datetime.utcnow()
-    
+    config = PalayanConfig.query.first()
+    if not config:
+        return jsonify({"lora": False, "mcu1": False, "mcu2": False, "auto_mode": False})
+
+    # Use utcnow() → naive datetime to match DB column
+    delta = (datetime.utcnow() - config.last_updated).total_seconds()
+    is_online = delta < 60
+
     return jsonify({
-        "current_time_utc": now.strftime("%Y-%m-%d %H:%M:%S UTC"),  # e.g. "2026-02-26 04:45:12 UTC"
-        "auto_mode": PalayanConfig.query.first().auto_mode if PalayanConfig.query.first() else False
+        "lora": is_online,
+        "mcu1": is_online,
+        "mcu2": is_online,
+        "auto_mode": config.auto_mode
     })
 
 @app.route('/api/logs', methods=['GET'])
@@ -841,7 +849,7 @@ def get_current_user():
         "ok": True,
         "email": user.email,
         "fullname": user.fullname,
-        "role": user.role,
+        "role": user.role
     })
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────
