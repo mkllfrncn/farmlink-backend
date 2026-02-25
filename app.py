@@ -19,7 +19,8 @@ print(f"[START] PORT from env: {os.environ.get('PORT', 'NOT SET')}")
 print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────
-SERIAL_ENABLED = True          # Set to True only for local dev with serial port
+#SERIAL_ENABLED = True          # Set to True only for local dev with serial port
+SERIAL_ENABLED = os.environ.get("SERIAL_ENABLED", "false").lower() in ("true", "1", "yes", "t")
 SERIAL_PORT    = "COM9"         # Only used when SERIAL_ENABLED=True
 BAUD_RATE      = 115200
 SERIAL_TIMEOUT_SEC = 1.0
@@ -33,10 +34,6 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
-    # Start serial reader in background (only in local dev)
-if SERIAL_ENABLED:
-    threading.Thread(target=serial_worker, daemon=True, name="SerialReader").start()
 
 @app.route('/health')
 def health():
@@ -241,10 +238,14 @@ def serial_worker():
         print("[SERIAL] Disabled by SERIAL_ENABLED = False")
         return
 
-    print(f"[SERIAL] Starting worker thread - attempting {SERIAL_PORT} @ {BAUD_RATE} baud")
+    try:
+        import serial
+        from serial import SerialException
+    except ImportError:
+        print("[SERIAL] pyserial not installed → skipping serial worker")
+        return
 
-    import serial
-    from serial import SerialException
+    print(f"[SERIAL] Starting worker thread - attempting {SERIAL_PORT} @ {BAUD_RATE} baud")
 
     while True:  # outer retry loop - keeps trying forever if port disappears
         ser = None
@@ -373,6 +374,19 @@ def serial_worker():
                     pass
 
         time.sleep(8)  # delay before retrying to open port again
+
+# ─── START SERIAL THREAD HERE (now safe) ──────────────────────────────────
+if SERIAL_ENABLED:
+    print("[MAIN] Starting Serial thread...")
+    threading.Thread(target=serial_worker, daemon=True, name="SerialReader").start()
+
+# ─── Keep-alive thread ─────────────────────────────────────────────────────
+def keep_alive():
+    while True:
+        print("[KEEP ALIVE] Server still running - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        time.sleep(60)
+
+threading.Thread(target=keep_alive, daemon=True).start()
 
 # ─── STARTUP DEBUG & TABLES ───────────────────────────────────────────────
 
@@ -817,14 +831,6 @@ def login():
         'role': user.role,
         'message': 'Login successful' + (' — access code re-sent to email' if role == 'owner' else '')
     }), 200
-
-# Keep-alive debug thread (helps prevent idle timeout kills)
-def keep_alive():
-    while True:
-        print("[KEEP ALIVE] Server still running - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        time.sleep(60)
-
-threading.Thread(target=keep_alive, daemon=True).start()
 
 @app.route('/api/me', methods=['GET'])
 @jwt_required()
