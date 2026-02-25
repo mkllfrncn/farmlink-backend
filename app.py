@@ -13,13 +13,15 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timezone
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from dotenv import load_dotenv
+from flask_migrate import Migrate
 load_dotenv()  # This loads .env automatically
 
 print(f"[START] PORT from env: {os.environ.get('PORT', 'NOT SET')}")
 print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────
-SERIAL_ENABLED = True          # Set to True only for local dev with serial port
+#SERIAL_ENABLED = True          # Set to True only for local dev with serial port
+SERIAL_ENABLED = False
 SERIAL_PORT    = "COM9"         # Only used when SERIAL_ENABLED=True
 BAUD_RATE      = 115200
 SERIAL_TIMEOUT_SEC = 1.0
@@ -33,10 +35,6 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
-    # Start serial reader in background (only in local dev)
-if SERIAL_ENABLED:
-    threading.Thread(target=serial_worker, daemon=True, name="SerialReader").start()
 
 @app.route('/health')
 def health():
@@ -59,6 +57,8 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 }
 
 db = SQLAlchemy(app)
+
+migrate = Migrate(app, db)
 
 # ─── FLASK-MAIL CONFIG ────────────────────────────────────────────────────
 app.config['MAIL_SERVER']       = 'smtp.gmail.com'
@@ -241,10 +241,14 @@ def serial_worker():
         print("[SERIAL] Disabled by SERIAL_ENABLED = False")
         return
 
-    print(f"[SERIAL] Starting worker thread - attempting {SERIAL_PORT} @ {BAUD_RATE} baud")
+    try:
+        import serial
+        from serial import SerialException
+    except ImportError:
+        print("[SERIAL] pyserial not installed → skipping serial worker")
+        return
 
-    import serial
-    from serial import SerialException
+    print(f"[SERIAL] Starting worker thread - attempting {SERIAL_PORT} @ {BAUD_RATE} baud")
 
     while True:  # outer retry loop - keeps trying forever if port disappears
         ser = None
@@ -374,6 +378,19 @@ def serial_worker():
 
         time.sleep(8)  # delay before retrying to open port again
 
+# ─── START SERIAL THREAD HERE (now safe) ──────────────────────────────────
+if SERIAL_ENABLED:
+    print("[MAIN] Starting Serial thread...")
+    threading.Thread(target=serial_worker, daemon=True, name="SerialReader").start()
+
+# ─── Keep-alive thread ─────────────────────────────────────────────────────
+def keep_alive():
+    while True:
+        print("[KEEP ALIVE] Server still running - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        time.sleep(60)
+
+threading.Thread(target=keep_alive, daemon=True).start()
+
 # ─── STARTUP DEBUG & TABLES ───────────────────────────────────────────────
 
 print("[APP START] Entering startup block")
@@ -497,18 +514,11 @@ def api_alerts():
 @app.route("/api/status")
 @jwt_required(optional=True)
 def api_status():
-    config = PalayanConfig.query.first()
-    if not config:
-        return jsonify({"lora": False, "mcu1": False, "mcu2": False, "auto_mode": False})
-
-    delta = (datetime.now(timezone.utc) - config.last_updated).total_seconds()
-    is_online = delta < 60
-
+    now = datetime.utcnow()
+    
     return jsonify({
-        "lora": is_online,
-        "mcu1": is_online,
-        "mcu2": is_online,
-        "auto_mode": config.auto_mode
+        "current_time_utc": now.strftime("%Y-%m-%d %H:%M:%S UTC"),  # e.g. "2026-02-26 04:45:12 UTC"
+        "auto_mode": PalayanConfig.query.first().auto_mode if PalayanConfig.query.first() else False
     })
 
 @app.route('/api/logs', methods=['GET'])
@@ -818,14 +828,6 @@ def login():
         'message': 'Login successful' + (' — access code re-sent to email' if role == 'owner' else '')
     }), 200
 
-# Keep-alive debug thread (helps prevent idle timeout kills)
-def keep_alive():
-    while True:
-        print("[KEEP ALIVE] Server still running - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        time.sleep(60)
-
-threading.Thread(target=keep_alive, daemon=True).start()
-
 @app.route('/api/me', methods=['GET'])
 @jwt_required()
 def get_current_user():
@@ -840,16 +842,16 @@ def get_current_user():
         "email": user.email,
         "fullname": user.fullname,
         "role": user.role,
-        "avatar": user.avatar_base64   # will be null if not set
     })
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────
-#if __name__ == '__main__':
-#    print("[MAIN] Starting Flask dev server on port 5000...")
-#    app.run(
-#        host='0.0.0.0',
-#        port=5000,
- #       debug=False,           # set True only if you need detailed tracebacks
-#        use_reloader=False,    # important on Windows with threads
-#        threaded=True          # better concurrency
-#    )
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    print(f"[MAIN] Starting Flask on port {port}")
+    app.run(
+        host='0.0.0.0',
+        port=port,
+        debug=False,
+        threaded=True,
+        use_reloader=False
+    )
