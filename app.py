@@ -10,22 +10,33 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 from flask_mail import Mail, Message
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timezone
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from dotenv import load_dotenv
+load_dotenv()  # This loads .env automatically
 
 print(f"[START] PORT from env: {os.environ.get('PORT', 'NOT SET')}")
 print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────
-SERIAL_ENABLED = False          # Set to True only for local dev with serial port
-SERIAL_PORT    = "COM6"         # Only used when SERIAL_ENABLED=True
-BAUD_RATE      = 9600
-SERIAL_TIMEOUT_SEC = 0.2
+SERIAL_ENABLED = True          # Set to True only for local dev with serial port
+SERIAL_PORT    = "COM9"         # Only used when SERIAL_ENABLED=True
+BAUD_RATE      = 115200
+SERIAL_TIMEOUT_SEC = 1.0
 
 print("[APP START] File loaded - no crash on import")
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# For production on Render/Heroku/etc.
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
+
+    # Start serial reader in background (only in local dev)
+if SERIAL_ENABLED:
+    threading.Thread(target=serial_worker, daemon=True, name="SerialReader").start()
 
 @app.route('/health')
 def health():
@@ -93,7 +104,7 @@ class User(db.Model):
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
 
     # ─── NEW FIELD FOR AVATAR ─────────────────────────────────────────────
-    avatar_base64 = db.Column(db.Text, nullable=True)
+    #avatar_base64 = db.Column(db.Text, nullable=True)
 
     def __repr__(self):
         return f"<User {self.email}>"
@@ -227,84 +238,141 @@ FarmLink Team
 
 def serial_worker():
     if not SERIAL_ENABLED:
-        print("[SERIAL] Disabled in config")
+        print("[SERIAL] Disabled by SERIAL_ENABLED = False")
         return
 
-    print(f"[SERIAL] Starting on {SERIAL_PORT} @ {BAUD_RATE} baud")
+    print(f"[SERIAL] Starting worker thread - attempting {SERIAL_PORT} @ {BAUD_RATE} baud")
 
-    try:
-        import serial
-        ser = serial.Serial(
-            port=SERIAL_PORT,
-            baudrate=BAUD_RATE,
-            timeout=SERIAL_TIMEOUT_SEC
-        )
-        print("[SERIAL] Port opened successfully")
-        time.sleep(2)
-        ser.reset_input_buffer()
+    import serial
+    from serial import SerialException
 
-        while True:
-            line = ser.readline().decode('utf-8', errors='ignore').strip()
-            if not line:
-                continue
+    while True:  # outer retry loop - keeps trying forever if port disappears
+        ser = None
+        try:
+            ser = serial.Serial(
+                port=SERIAL_PORT,
+                baudrate=BAUD_RATE,
+                timeout=SERIAL_TIMEOUT_SEC,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE
+            )
+            print(f"[SERIAL] Successfully opened {ser.name}")
+            
+            # Give Arduino/ESP time to reset & send initial data
+            time.sleep(3.5)  # common value after bootloader delay
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+            print("[SERIAL] Buffers flushed")
 
-            print(f"[SERIAL RAW] {line}")
+            # Try to read something quickly to confirm it's alive
+            initial = ser.readline().decode('utf-8', errors='ignore').strip()
+            if initial:
+                print(f"[SERIAL] First line after open: {initial}")
+            else:
+                print("[SERIAL] No immediate data after open - waiting...")
 
-            if "LoRa Receiver Ready" in line:
-                continue
+            while True:  # inner read loop - only breaks on fatal serial error
+                try:
+                    if ser.in_waiting > 0:
+                        line = ser.readline().decode('utf-8', errors='ignore').rstrip()
+                        if not line:
+                            continue
 
-            try:
-                packet = json.loads(line)
-                data_str = packet.get("data", "")
-                if not data_str:
-                    continue
+                        print(f"[SERIAL RX] {line}")
 
-                parts = data_str.split(",")
-                if len(parts) < 6:
-                    continue
+                        # ─── Parse incoming data ───────────────────────────────────────
+                        data = {}
+                        updated = False
 
-                moisture_raw = int(parts[1])
-                humidity = float(parts[2])
-                temperature = float(parts[3])
-                light = float(parts[4])
-                solenoid = int(parts[5])
+                        # Preferred format: JSON
+                        if line.startswith('{') and line.endswith('}'):
+                            try:
+                                data = json.loads(line)
+                                updated = True
+                            except json.JSONDecodeError as je:
+                                print(f"[SERIAL JSON ERROR] {je} → raw: {line}")
 
-                moisture_percent = round(100 - (moisture_raw / 10.23), 1)
+                        # Fallback: plain text "key:value key2:value2 ..."
+                        else:
+                            try:
+                                for part in line.split():
+                                    if ':' in part:
+                                        k, v = part.split(':', 1)
+                                        data[k.strip().lower()] = v.strip()
+                                if len(data) >= 2:  # at least moisture + one more
+                                    updated = True
+                            except Exception as pe:
+                                print(f"[SERIAL PLAIN PARSE FAIL] {pe} → raw: {line}")
 
-                config = PalayanConfig.query.first()
-                if config:
-                    config.current_moisture = moisture_percent
-                    config.current_temperature = temperature
-                    config.current_humidity = humidity
-                    config.current_light = light
-                    config.solenoid_open = bool(solenoid)
-                    config.last_updated = datetime.utcnow()
-                    db.session.commit()
+                        # ─── If we got usable data → update database ────────────────
+                        if updated and any(k in data for k in ['moisture', 'temperature', 'humidity', 'light']):
+                            try:
+                                with app.app_context():  # needed because we're in thread
+                                    config = PalayanConfig.query.first()
+                                    if not config:
+                                        print("[SERIAL] No PalayanConfig row found!")
+                                        continue
 
-                reading = SensorReading(
-                    moisture=moisture_percent,
-                    temperature=temperature,
-                    humidity=humidity,
-                    light=light
-                )
-                db.session.add(reading)
-                db.session.commit()
+                                    # Update current values (use .get() with fallback)
+                                    config.current_moisture    = float(data.get('moisture',    config.current_moisture))
+                                    config.current_temperature = float(data.get('temperature', config.current_temperature))
+                                    config.current_humidity    = float(data.get('humidity',    config.current_humidity))
+                                    config.current_light       = float(data.get('light',       config.current_light))
+                                    
+                                    # Optional: also take solenoid status if sent
+                                    if 'solenoid' in data or 'solenoid_open' in data:
+                                        val = data.get('solenoid') or data.get('solenoid_open')
+                                        config.solenoid_open = bool(val in [1, '1', 'true', 'on', True])
 
-                print(f"[DB] Updated Palayan & saved reading: Moisture {moisture_percent}%")
+                                    config.last_updated = datetime.utcnow()
+                                    db.session.commit()
 
-            except Exception as e:
-                print(f"[SERIAL ERROR] {e} on line: {line}")
+                                    # ─── Also save to history table ──────────────────────
+                                    reading = SensorReading(
+                                        moisture    = config.current_moisture,
+                                        temperature = config.current_temperature,
+                                        humidity    = config.current_humidity,
+                                        light       = config.current_light,
+                                        timestamp   = datetime.utcnow()
+                                    )
+                                    db.session.add(reading)
+                                    db.session.commit()
 
-    except ImportError:
-        print("[SERIAL ERROR] serial module not available (expected on Render)")
-    except serial.SerialException as e:
-        print(f"[SERIAL ERROR] Cannot open port: {e}")
-    except Exception as e:
-        print(f"[SERIAL CRASH] {e}")
+                                    print(f"[SERIAL → DB] Updated: moisture={config.current_moisture:.1f}%, "
+                                          f"temp={config.current_temperature:.1f}°C, "
+                                          f"hum={config.current_humidity:.1f}%, light={config.current_light:.0f}")
 
-# Start serial only if enabled
-if SERIAL_ENABLED:
-    threading.Thread(target=serial_worker, daemon=True).start()
+                            except Exception as dbe:
+                                print(f"[DB UPDATE ERROR] {dbe}")
+                                db.session.rollback()
+
+                    time.sleep(0.08)  # gentle polling rate (~12 Hz max)
+
+                except SerialException as se:
+                    print(f"[SERIAL ERROR - inner loop] {se}")
+                    break  # break inner → will retry open in outer loop
+
+                except Exception as e:
+                    print(f"[SERIAL UNEXPECTED] {e}")
+                    time.sleep(1)
+
+        except SerialException as outer_se:
+            print(f"[SERIAL OPEN/IO ERROR] {outer_se} → retrying in 8 seconds")
+        except Exception as big_e:
+            print(f"[SERIAL FATAL] {big_e} → retrying in 10 seconds")
+            import traceback
+            traceback.print_exc()
+
+        finally:
+            if ser and ser.is_open:
+                try:
+                    ser.close()
+                    print("[SERIAL] Port closed cleanly")
+                except:
+                    pass
+
+        time.sleep(8)  # delay before retrying to open port again
 
 # ─── STARTUP DEBUG & TABLES ───────────────────────────────────────────────
 
@@ -389,6 +457,37 @@ def api_data():
         }
     })
 
+@app.route('/api/ingest', methods=['POST'])
+def ingest_sensor_data():
+    data = request.get_json()
+    if not data:
+        return jsonify({"ok": False, "error": "No JSON"}), 400
+
+    config = PalayanConfig.query.first()
+    if not config:
+        return jsonify({"ok": False, "error": "No config"}), 500
+
+    config.current_moisture    = data.get('moisture',    config.current_moisture)
+    config.current_temperature = data.get('temperature', config.current_temperature)
+    config.current_humidity    = data.get('humidity',    config.current_humidity)
+    config.current_light       = data.get('light',       config.current_light)
+    config.solenoid_open       = data.get('solenoid_open', config.solenoid_open)
+    config.last_updated        = datetime.utcnow()
+
+    db.session.commit()
+
+    # Optional: also save history
+    reading = SensorReading(
+        moisture=data.get('moisture'),
+        temperature=data.get('temperature'),
+        humidity=data.get('humidity'),
+        light=data.get('light')
+    )
+    db.session.add(reading)
+    db.session.commit()
+
+    return jsonify({"ok": True, "message": "Data received"}), 200
+
 @app.route("/api/alerts")
 @jwt_required(optional=True)
 def api_alerts():
@@ -402,7 +501,7 @@ def api_status():
     if not config:
         return jsonify({"lora": False, "mcu1": False, "mcu2": False, "auto_mode": False})
 
-    delta = (datetime.utcnow() - config.last_updated).total_seconds()
+    delta = (datetime.now(timezone.utc) - config.last_updated).total_seconds()
     is_online = delta < 60
 
     return jsonify({
@@ -743,3 +842,14 @@ def get_current_user():
         "role": user.role,
         "avatar": user.avatar_base64   # will be null if not set
     })
+
+# ─── MAIN ─────────────────────────────────────────────────────────────────
+#if __name__ == '__main__':
+#    print("[MAIN] Starting Flask dev server on port 5000...")
+#    app.run(
+#        host='0.0.0.0',
+#        port=5000,
+ #       debug=False,           # set True only if you need detailed tracebacks
+#        use_reloader=False,    # important on Windows with threads
+#        threaded=True          # better concurrency
+#    )
