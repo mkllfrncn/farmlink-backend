@@ -22,7 +22,7 @@ print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
 # ─── CONFIG ───────────────────────────────────────────────────────────────
 #SERIAL_ENABLED = True          # Set to True only for local dev with serial port
 SERIAL_ENABLED = os.environ.get("SERIAL_ENABLED", "false").lower() in ("true", "1", "yes", "t")
-SERIAL_PORT    = "COM9"         # Only used when SERIAL_ENABLED=True
+SERIAL_PORT    = "COM6"         # Only used when SERIAL_ENABLED=True
 BAUD_RATE      = 115200
 SERIAL_TIMEOUT_SEC = 1.0
 
@@ -133,8 +133,9 @@ class PalayanConfig(db.Model):
     current_humidity    = db.Column(db.Float, default=0.0)
     current_light       = db.Column(db.Float, default=0.0)
     solenoid_open       = db.Column(db.Boolean, default=False)
-    last_solenoid_open = db.Column(db.DateTime, nullable=True)
+    last_solenoid_open         = db.Column(db.DateTime, nullable=True)
     last_solenoid_duration_sec = db.Column(db.Integer, nullable=True)
+    last_solenoid_open_at      = db.Column(db.DateTime, nullable=True)
 
     def __repr__(self):
         return "<PalayanConfig (single row)>"
