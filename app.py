@@ -21,7 +21,7 @@ print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────
 #SERIAL_ENABLED = True          # Set to True only for local dev with serial port
-SERIAL_ENABLED = False
+SERIAL_ENABLED = os.environ.get("SERIAL_ENABLED", "false").lower() in ("true", "1", "yes", "t")
 SERIAL_PORT    = "COM9"         # Only used when SERIAL_ENABLED=True
 BAUD_RATE      = 115200
 SERIAL_TIMEOUT_SEC = 1.0
