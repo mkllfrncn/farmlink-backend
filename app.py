@@ -10,7 +10,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 from flask_mail import Mail, Message
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timezone
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from dotenv import load_dotenv
 from flask_migrate import Migrate
@@ -102,9 +102,7 @@ class User(db.Model):
     verified      = db.Column(db.Boolean, default=False)
     access_code   = db.Column(db.String(30))
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
-
-    # ─── NEW FIELD FOR AVATAR ─────────────────────────────────────────────
-    #avatar_base64 = db.Column(db.Text, nullable=True)
+    avatar_base64 = db.Column(db.Text, nullable=True)
 
     def __repr__(self):
         return f"<User {self.email}>"
@@ -135,6 +133,8 @@ class PalayanConfig(db.Model):
     current_humidity    = db.Column(db.Float, default=0.0)
     current_light       = db.Column(db.Float, default=0.0)
     solenoid_open       = db.Column(db.Boolean, default=False)
+    last_solenoid_open = db.Column(db.DateTime, nullable=True)
+    last_solenoid_duration_sec = db.Column(db.Integer, nullable=True)
 
     def __repr__(self):
         return "<PalayanConfig (single row)>"
@@ -324,6 +324,28 @@ def serial_worker():
                                     config.current_humidity    = float(data.get('humidity',    config.current_humidity))
                                     config.current_light       = float(data.get('light',       config.current_light))
                                     
+                                    # Inside the if updated and ... block, after config update:
+                                    if 'solenoid_open' in data or 'solenoid' in data:
+                                        new_state = bool(data.get('solenoid') or data.get('solenoid_open') in [1, '1', True, 'true', 'on'])
+                                        
+                                        if new_state and not config.solenoid_open:
+                                            # Just turned ON → record time
+                                            config.last_solenoid_open_at = datetime.utcnow()
+                                            config.last_solenoid_duration_sec = None  # will be set when it closes
+                                        elif not new_state and config.solenoid_open:
+                                            # Just turned OFF → calculate how long it was open
+                                            if config.last_solenoid_open_at:
+                                                duration = (datetime.utcnow() - config.last_solenoid_open_at).total_seconds()
+                                                config.last_solenoid_duration_sec = int(duration)
+                                                # Optional: create log entry
+                                                add_log(
+                                                    title="Solenoid Closed",
+                                                    message=f"Water pump was open for {duration//60:.0f} min {duration%60:.0f} sec",
+                                                    log_type="irrigation"
+                                                )
+                                        
+                                        config.solenoid_open = new_state
+
                                     # Optional: also take solenoid status if sent
                                     if 'solenoid' in data or 'solenoid_open' in data:
                                         val = data.get('solenoid') or data.get('solenoid_open')
@@ -331,6 +353,36 @@ def serial_worker():
 
                                     config.last_updated = datetime.utcnow()
                                     db.session.commit()
+
+                                    # Inside /api/ingest, after updating other values
+
+                                    solenoid_new = data.get('solenoid_open') or data.get('solenoid')
+
+                                    if solenoid_new is not None:
+                                        try:
+                                            new_state = solenoid_new in [1, '1', True, 'true', 'on', 'OPEN']
+                                        except:
+                                            new_state = config.solenoid_open  # fallback
+
+                                        was_open = config.solenoid_open
+
+                                        if new_state != was_open:
+                                            if new_state:
+                                                # Just turned ON
+                                                add_log(
+                                                    title="Solenoid Opened",
+                                                    message="Water pump / solenoid turned ON (manual or auto)",
+                                                    log_type="irrigation"
+                                                )
+                                            else:
+                                                # Just turned OFF
+                                                add_log(
+                                                    title="Solenoid Closed",
+                                                    message="Water pump / solenoid turned OFF",
+                                                    log_type="irrigation"
+                                                )
+
+                                        config.solenoid_open = new_state
 
                                     # ─── Also save to history table ──────────────────────
                                     reading = SensorReading(
@@ -476,35 +528,180 @@ def api_data():
 
 @app.route('/api/ingest', methods=['POST'])
 def ingest_sensor_data():
+    """
+    Endpoint for devices (LoRa gateway, MCU, etc.) to push current sensor readings.
+    Also handles solenoid state changes and creates alerts when needed.
+    """
     data = request.get_json()
     if not data:
-        return jsonify({"ok": False, "error": "No JSON"}), 400
+        return jsonify({"ok": False, "error": "No JSON payload received"}), 400
 
+    # ─── Get current config (there should be only one row) ───────────────────────
     config = PalayanConfig.query.first()
     if not config:
-        return jsonify({"ok": False, "error": "No config"}), 500
+        return jsonify({"ok": False, "error": "No configuration found in database"}), 500
 
-    config.current_moisture    = data.get('moisture',    config.current_moisture)
-    config.current_temperature = data.get('temperature', config.current_temperature)
-    config.current_humidity    = data.get('humidity',    config.current_humidity)
-    config.current_light       = data.get('light',       config.current_light)
-    config.solenoid_open       = data.get('solenoid_open', config.solenoid_open)
-    config.last_updated        = datetime.utcnow()
+    now = datetime.utcnow()
 
-    db.session.commit()
+    # ─── Extract values with safe fallbacks ──────────────────────────────────────
+    moisture    = data.get('moisture')
+    temperature = data.get('temperature')
+    humidity    = data.get('humidity')
+    light       = data.get('light')
+    solenoid_new = data.get('solenoid_open') or data.get('solenoid')   # accept both names
 
-    # Optional: also save history
+    # Convert to proper types (be forgiving with incoming data)
+    try:
+        if moisture    is not None: moisture    = float(moisture)
+        if temperature is not None: temperature = float(temperature)
+        if humidity    is not None: humidity    = float(humidity)
+        if light       is not None: light       = float(light)
+        if solenoid_new is not None:
+            solenoid_new = solenoid_new in [1, '1', True, 'true', 'on', 'OPEN']
+    except (ValueError, TypeError):
+        pass  # keep old value if conversion fails
+
+    # ─── Remember previous solenoid state ────────────────────────────────────────
+    was_open = config.solenoid_open
+
+    # ─── Update current values (only if new value was actually sent) ─────────────
+    if moisture    is not None: config.current_moisture    = moisture
+    if temperature is not None: config.current_temperature = temperature
+    if humidity    is not None: config.current_humidity    = humidity
+    if light       is not None: config.current_light       = light
+
+    # ─── Handle solenoid state change + track last open time ─────────────────────
+    if solenoid_new is not None:
+        config.solenoid_open = solenoid_new
+
+        if solenoid_new and not was_open:
+            # Just opened → record timestamp
+            config.last_solenoid_open_at = now
+            config.last_solenoid_duration_sec = None
+            add_log(
+                title="Solenoid Opened",
+                message="Water pump / solenoid turned ON",
+                log_type="irrigation"
+            )
+
+        elif not solenoid_new and was_open:
+            # Just closed → calculate duration
+            if config.last_solenoid_open_at:
+                duration_sec = (now - config.last_solenoid_open_at).total_seconds()
+                config.last_solenoid_duration_sec = int(duration_sec)
+
+                min_part = int(duration_sec // 60)
+                sec_part = int(duration_sec % 60)
+
+                add_log(
+                    title="Solenoid Closed",
+                    message=f"Water pump was open for {min_part} min {sec_part} sec",
+                    log_type="irrigation"
+                )
+
+    # ─── Always update last_updated timestamp ────────────────────────────────────
+    config.last_updated = now
+
+    # Inside /api/ingest, after updating other values
+
+    solenoid_new = data.get('solenoid_open') or data.get('solenoid')
+
+    if solenoid_new is not None:
+            try:
+                new_state = solenoid_new in [1, '1', True, 'true', 'on', 'OPEN']
+            except:
+                new_state = config.solenoid_open  # fallback
+
+            was_open = config.solenoid_open
+
+            if new_state != was_open:
+                if new_state:
+                    # Just turned ON
+                    add_log(
+                        title="Solenoid Opened",
+                        message="Water pump / solenoid turned ON (manual or auto)",
+                        log_type="irrigation"
+                    )
+                else:
+                    # Just turned OFF
+                    add_log(
+                        title="Solenoid Closed",
+                        message="Water pump / solenoid turned OFF",
+                        log_type="irrigation"
+                    )
+
+            config.solenoid_open = new_state
+
+    # ─── Basic alert generation (when data looks suspicious) ─────────────────────
+    alerts_created = 0
+
+    # Were we offline for a long time before this packet?
+    if config.last_updated:  # avoid first packet edge case
+        offline_seconds = (now - config.last_updated).total_seconds()
+        if offline_seconds > 180:  # > 3 minutes
+            alert = Alert(
+                title="Device was offline",
+                message=f"No data received for ~{offline_seconds//60} minutes – possible LoRa/MCU disconnect",
+                alert_type="connection",
+                severity=7
+            )
+            db.session.add(alert)
+            alerts_created += 1
+
+    # Very basic sensor sanity check
+    if moisture is not None and (moisture < 0 or moisture > 100):
+        alert = Alert(
+            title="Invalid moisture reading",
+            message=f"Received moisture = {moisture}% (out of range)",
+            alert_type="sensor",
+            severity=5
+        )
+        db.session.add(alert)
+        alerts_created += 1
+
+    # You can add similar checks for temperature, humidity, light if desired
+
+    # ─── Save sensor history (even if some values are missing) ───────────────────
     reading = SensorReading(
-        moisture=data.get('moisture'),
-        temperature=data.get('temperature'),
-        humidity=data.get('humidity'),
-        light=data.get('light')
+        moisture    = config.current_moisture,
+        temperature = config.current_temperature,
+        humidity    = config.current_humidity,
+        light       = config.current_light,
+        timestamp   = now
     )
     db.session.add(reading)
-    db.session.commit()
 
-    return jsonify({"ok": True, "message": "Data received"}), 200
+    # ─── Commit everything ───────────────────────────────────────────────────────
+    try:
+        db.session.commit()
 
+        response_data = {
+            "ok": True,
+            "message": "Data ingested successfully",
+            "alerts_created": alerts_created,
+            "current": {
+                "moisture": config.current_moisture,
+                "temperature": config.current_temperature,
+                "humidity": config.current_humidity,
+                "light": config.current_light,
+                "solenoid_open": config.solenoid_open,
+                "last_updated": config.last_updated.isoformat()
+            }
+        }
+
+        if config.last_solenoid_open_at:
+            response_data["current"]["last_solenoid_open"] = config.last_solenoid_open_at.isoformat()
+
+        if config.last_solenoid_duration_sec is not None:
+            response_data["current"]["last_duration_sec"] = config.last_solenoid_duration_sec
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        db.session.rollback()
+        print(f"[INGEST ERROR] {str(e)}")
+        return jsonify({"ok": False, "error": "Database error during ingest"}), 500
+    
 @app.route("/api/alerts")
 @jwt_required(optional=True)
 def api_alerts():
@@ -519,7 +716,13 @@ def api_status():
         return jsonify({"lora": False, "mcu1": False, "mcu2": False, "auto_mode": False})
 
     # Use utcnow() → naive datetime to match DB column
-    delta = (datetime.utcnow() - config.last_updated).total_seconds()
+    now_utc = datetime.now(timezone.utc)
+    last_updated = config.last_updated
+
+    if last_updated.tzinfo is None:
+        last_updated = last_updated.replace(tzinfo=timezone.utc)
+
+    delta = (now_utc - last_updated).total_seconds()
     is_online = delta < 60
 
     return jsonify({
@@ -819,11 +1022,11 @@ def login():
             user.verified = True
             db.session.commit()
 
-        success = send_access_code_email(email, user.access_code)
-        if success:
-            print(f"[LOGIN EMAIL] Access code re-sent to owner: {email}")
-        else:
-            print(f"[LOGIN EMAIL] Failed to send to owner: {email}")
+        #success = send_access_code_email(email, user.access_code)
+        #if success:
+        #    print(f"[LOGIN EMAIL] Access code re-sent to owner: {email}")
+        #else:
+        #    print(f"[LOGIN EMAIL] Failed to send to owner: {email}")
 
     token = create_access_token(identity=user.email)  # FIXED: string email
 
@@ -849,7 +1052,8 @@ def get_current_user():
         "ok": True,
         "email": user.email,
         "fullname": user.fullname,
-        "role": user.role
+        "role": user.role,
+        "avatar": user.avatar_base64   # ← ADD THIS LINE
     })
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────
