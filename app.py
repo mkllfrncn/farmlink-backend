@@ -14,16 +14,18 @@ from datetime import datetime, timezone
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from dotenv import load_dotenv
 from flask_migrate import Migrate
+
 load_dotenv()  # This loads .env automatically
 
 print(f"[START] PORT from env: {os.environ.get('PORT', 'NOT SET')}")
 print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
 
+SERIAL_RECONNECT_REQUEST = False
+
 # ─── CONFIG ───────────────────────────────────────────────────────────────
-#SERIAL_ENABLED = True          # Set to True only for local dev with serial port
 SERIAL_ENABLED = os.environ.get("SERIAL_ENABLED", "false").lower() in ("true", "1", "yes", "t")
-SERIAL_PORT    = "COM6"         # Only used when SERIAL_ENABLED=True
-BAUD_RATE      = 115200
+SERIAL_PORT    = os.environ.get("SERIAL_PORT", "COM9")
+BAUD_RATE      = int(os.environ.get("BAUD_RATE", "115200"))
 SERIAL_TIMEOUT_SEC = 1.0
 
 print("[APP START] File loaded - no crash on import")
@@ -57,7 +59,6 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 }
 
 db = SQLAlchemy(app)
-
 migrate = Migrate(app, db)
 
 # ─── FLASK-MAIL CONFIG ────────────────────────────────────────────────────
@@ -75,7 +76,7 @@ mail = Mail(app)
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key-please-change-this-in-production')
 jwt = JWTManager(app)
 
-# JWT error callbacks (logs why token fails)
+# JWT error callbacks
 @jwt.invalid_token_loader
 def invalid_token_callback(error):
     print("[JWT] Invalid token error:", error)
@@ -133,9 +134,8 @@ class PalayanConfig(db.Model):
     current_humidity    = db.Column(db.Float, default=0.0)
     current_light       = db.Column(db.Float, default=0.0)
     solenoid_open       = db.Column(db.Boolean, default=False)
-    last_solenoid_open         = db.Column(db.DateTime, nullable=True)
-    last_solenoid_duration_sec = db.Column(db.Integer, nullable=True)
     last_solenoid_open_at      = db.Column(db.DateTime, nullable=True)
+    last_solenoid_duration_sec = db.Column(db.Integer, nullable=True)
 
     def __repr__(self):
         return "<PalayanConfig (single row)>"
@@ -238,205 +238,163 @@ FarmLink Team
 # ─── SERIAL WORKER ────────────────────────────────────────────────────────
 
 def serial_worker():
+    global SERIAL_RECONNECT_REQUEST
+
     if not SERIAL_ENABLED:
-        print("[SERIAL] Disabled by SERIAL_ENABLED = False")
+        print("[SERIAL] SERIAL_ENABLED = False → serial worker disabled")
         return
 
     try:
         import serial
-        from serial import SerialException
     except ImportError:
         print("[SERIAL] pyserial not installed → skipping serial worker")
         return
 
     print(f"[SERIAL] Starting worker thread - attempting {SERIAL_PORT} @ {BAUD_RATE} baud")
 
-    while True:  # outer retry loop - keeps trying forever if port disappears
-        ser = None
+    ser = None
+
+    while True:
         try:
-            ser = serial.Serial(
-                port=SERIAL_PORT,
-                baudrate=BAUD_RATE,
-                timeout=SERIAL_TIMEOUT_SEC,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE
-            )
-            print(f"[SERIAL] Successfully opened {ser.name}")
-            
-            # Give Arduino/ESP time to reset & send initial data
-            time.sleep(3.5)  # common value after bootloader delay
-            ser.reset_input_buffer()
-            ser.reset_output_buffer()
-            print("[SERIAL] Buffers flushed")
+            if ser is None or not ser.is_open or SERIAL_RECONNECT_REQUEST:
+                print("🔄 Reconnecting to Serial/LoRa...")
+                SERIAL_RECONNECT_REQUEST = False
 
-            # Try to read something quickly to confirm it's alive
-            initial = ser.readline().decode('utf-8', errors='ignore').strip()
-            if initial:
-                print(f"[SERIAL] First line after open: {initial}")
-            else:
-                print("[SERIAL] No immediate data after open - waiting...")
+                if ser and ser.is_open:
+                    try:
+                        ser.close()
+                    except:
+                        pass
 
-            while True:  # inner read loop - only breaks on fatal serial error
-                try:
-                    if ser.in_waiting > 0:
-                        line = ser.readline().decode('utf-8', errors='ignore').rstrip()
-                        if not line:
+                ser = serial.Serial(
+                    port=SERIAL_PORT,
+                    baudrate=BAUD_RATE,
+                    timeout=SERIAL_TIMEOUT_SEC,
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE
+                )
+                print(f"[SERIAL] Opened {ser.name}")
+                time.sleep(2.5)  # give device time to reset
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+
+            if ser.in_waiting > 0:
+                line = ser.readline().decode('utf-8', errors='ignore').strip()
+                if not line:
+                    continue
+
+                print(f"[SERIAL RX] {line}")
+
+                data = {}
+                updated = False
+
+                if line.startswith('{') and line.endswith('}'):
+                    try:
+                        data = json.loads(line)
+                        updated = True
+                    except json.JSONDecodeError as je:
+                        print(f"[SERIAL JSON ERROR] {je} → raw: {line}")
+
+                else:
+                    try:
+                        for part in line.split():
+                            if ':' in part:
+                                k, v = part.split(':', 1)
+                                data[k.strip().lower()] = v.strip()
+                        if len(data) >= 2:
+                            updated = True
+                    except Exception as pe:
+                        print(f"[SERIAL PLAIN PARSE FAIL] {pe} → raw: {line}")
+
+                if updated and any(k in data for k in ['moisture', 'temperature', 'humidity', 'light']):
+                    with app.app_context():
+                        config = PalayanConfig.query.first()
+                        if not config:
+                            print("[SERIAL] No PalayanConfig row found!")
                             continue
 
-                        print(f"[SERIAL RX] {line}")
+                        # Update sensor values
+                        config.current_moisture    = float(data.get('moisture',    config.current_moisture))
+                        config.current_temperature = float(data.get('temperature', config.current_temperature))
+                        config.current_humidity    = float(data.get('humidity',    config.current_humidity))
+                        config.current_light       = float(data.get('light',       config.current_light))
 
-                        # ─── Parse incoming data ───────────────────────────────────────
-                        data = {}
-                        updated = False
+                        # Handle solenoid state reported from device
+                        solenoid_new = data.get('solenoid_open') or data.get('solenoid')
+                        if solenoid_new is not None:
+                            new_state = solenoid_new in [1, '1', True, 'true', 'on', 'OPEN']
+                            if new_state != config.solenoid_open:
+                                if new_state:
+                                    config.last_solenoid_open_at = datetime.utcnow()
+                                    config.last_solenoid_duration_sec = None
+                                    add_log("Solenoid Opened", "Reported by device", "irrigation")
+                                else:
+                                    if config.last_solenoid_open_at:
+                                        duration = (datetime.utcnow() - config.last_solenoid_open_at).total_seconds()
+                                        config.last_solenoid_duration_sec = int(duration)
+                                        add_log("Solenoid Closed", f"Was open for {duration//60:.0f} min {duration%60:.0f} sec", "irrigation")
+                            config.solenoid_open = new_state
 
-                        # Preferred format: JSON
-                        if line.startswith('{') and line.endswith('}'):
-                            try:
-                                data = json.loads(line)
-                                updated = True
-                            except json.JSONDecodeError as je:
-                                print(f"[SERIAL JSON ERROR] {je} → raw: {line}")
+                        config.last_updated = datetime.utcnow()
 
-                        # Fallback: plain text "key:value key2:value2 ..."
-                        else:
-                            try:
-                                for part in line.split():
-                                    if ':' in part:
-                                        k, v = part.split(':', 1)
-                                        data[k.strip().lower()] = v.strip()
-                                if len(data) >= 2:  # at least moisture + one more
-                                    updated = True
-                            except Exception as pe:
-                                print(f"[SERIAL PLAIN PARSE FAIL] {pe} → raw: {line}")
+                        # Auto watering logic (runs every time we get new data)
+                        if config.auto_mode:
+                            if config.current_moisture < config.min_moisture and not config.solenoid_open:
+                                config.solenoid_open = True
+                                config.last_solenoid_open_at = datetime.utcnow()
+                                add_log("Auto Watering", "Soil dry → solenoid opened", "irrigation")
+                                try:
+                                    ser.write(b'OPEN\n')
+                                    print("[SERIAL TX] OPEN")
+                                except:
+                                    print("[SERIAL TX] Failed to send OPEN command")
+                            elif config.current_moisture > config.max_moisture and config.solenoid_open:
+                                if config.last_solenoid_open_at:
+                                    duration = (datetime.utcnow() - config.last_solenoid_open_at).total_seconds()
+                                    config.last_solenoid_duration_sec = int(duration)
+                                    add_log("Auto Watering", f"Soil wet → solenoid closed after {duration//60:.0f} min", "irrigation")
+                                config.solenoid_open = False
+                                try:
+                                    ser.write(b'CLOSE\n')
+                                    print("[SERIAL TX] CLOSE")
+                                except:
+                                    print("[SERIAL TX] Failed to send CLOSE command")
 
-                        # ─── If we got usable data → update database ────────────────
-                        if updated and any(k in data for k in ['moisture', 'temperature', 'humidity', 'light']):
-                            try:
-                                with app.app_context():  # needed because we're in thread
-                                    config = PalayanConfig.query.first()
-                                    if not config:
-                                        print("[SERIAL] No PalayanConfig row found!")
-                                        continue
+                        # Save reading history
+                        reading = SensorReading(
+                            moisture    = config.current_moisture,
+                            temperature = config.current_temperature,
+                            humidity    = config.current_humidity,
+                            light       = config.current_light,
+                            timestamp   = datetime.utcnow()
+                        )
+                        db.session.add(reading)
 
-                                    # Update current values (use .get() with fallback)
-                                    config.current_moisture    = float(data.get('moisture',    config.current_moisture))
-                                    config.current_temperature = float(data.get('temperature', config.current_temperature))
-                                    config.current_humidity    = float(data.get('humidity',    config.current_humidity))
-                                    config.current_light       = float(data.get('light',       config.current_light))
-                                    
-                                    # Inside the if updated and ... block, after config update:
-                                    if 'solenoid_open' in data or 'solenoid' in data:
-                                        new_state = bool(data.get('solenoid') or data.get('solenoid_open') in [1, '1', True, 'true', 'on'])
-                                        
-                                        if new_state and not config.solenoid_open:
-                                            # Just turned ON → record time
-                                            config.last_solenoid_open_at = datetime.utcnow()
-                                            config.last_solenoid_duration_sec = None  # will be set when it closes
-                                        elif not new_state and config.solenoid_open:
-                                            # Just turned OFF → calculate how long it was open
-                                            if config.last_solenoid_open_at:
-                                                duration = (datetime.utcnow() - config.last_solenoid_open_at).total_seconds()
-                                                config.last_solenoid_duration_sec = int(duration)
-                                                # Optional: create log entry
-                                                add_log(
-                                                    title="Solenoid Closed",
-                                                    message=f"Water pump was open for {duration//60:.0f} min {duration%60:.0f} sec",
-                                                    log_type="irrigation"
-                                                )
-                                        
-                                        config.solenoid_open = new_state
+                        try:
+                            db.session.commit()
+                        except Exception as dbe:
+                            print(f"[DB UPDATE ERROR] {dbe}")
+                            db.session.rollback()
 
-                                    # Optional: also take solenoid status if sent
-                                    if 'solenoid' in data or 'solenoid_open' in data:
-                                        val = data.get('solenoid') or data.get('solenoid_open')
-                                        config.solenoid_open = bool(val in [1, '1', 'true', 'on', True])
+            time.sleep(0.08)
 
-                                    config.last_updated = datetime.utcnow()
-                                    db.session.commit()
-
-                                    # Inside /api/ingest, after updating other values
-
-                                    solenoid_new = data.get('solenoid_open') or data.get('solenoid')
-
-                                    if solenoid_new is not None:
-                                        try:
-                                            new_state = solenoid_new in [1, '1', True, 'true', 'on', 'OPEN']
-                                        except:
-                                            new_state = config.solenoid_open  # fallback
-
-                                        was_open = config.solenoid_open
-
-                                        if new_state != was_open:
-                                            if new_state:
-                                                # Just turned ON
-                                                add_log(
-                                                    title="Solenoid Opened",
-                                                    message="Water pump / solenoid turned ON (manual or auto)",
-                                                    log_type="irrigation"
-                                                )
-                                            else:
-                                                # Just turned OFF
-                                                add_log(
-                                                    title="Solenoid Closed",
-                                                    message="Water pump / solenoid turned OFF",
-                                                    log_type="irrigation"
-                                                )
-
-                                        config.solenoid_open = new_state
-
-                                    # ─── Also save to history table ──────────────────────
-                                    reading = SensorReading(
-                                        moisture    = config.current_moisture,
-                                        temperature = config.current_temperature,
-                                        humidity    = config.current_humidity,
-                                        light       = config.current_light,
-                                        timestamp   = datetime.utcnow()
-                                    )
-                                    db.session.add(reading)
-                                    db.session.commit()
-
-                                    print(f"[SERIAL → DB] Updated: moisture={config.current_moisture:.1f}%, "
-                                          f"temp={config.current_temperature:.1f}°C, "
-                                          f"hum={config.current_humidity:.1f}%, light={config.current_light:.0f}")
-
-                            except Exception as dbe:
-                                print(f"[DB UPDATE ERROR] {dbe}")
-                                db.session.rollback()
-
-                    time.sleep(0.08)  # gentle polling rate (~12 Hz max)
-
-                except SerialException as se:
-                    print(f"[SERIAL ERROR - inner loop] {se}")
-                    break  # break inner → will retry open in outer loop
-
-                except Exception as e:
-                    print(f"[SERIAL UNEXPECTED] {e}")
-                    time.sleep(1)
-
-        except SerialException as outer_se:
-            print(f"[SERIAL OPEN/IO ERROR] {outer_se} → retrying in 8 seconds")
-        except Exception as big_e:
-            print(f"[SERIAL FATAL] {big_e} → retrying in 10 seconds")
-            import traceback
-            traceback.print_exc()
-
-        finally:
+        except Exception as e:
+            print(f"[SERIAL ERROR] {e}")
             if ser and ser.is_open:
                 try:
                     ser.close()
-                    print("[SERIAL] Port closed cleanly")
                 except:
                     pass
+            ser = None
+            time.sleep(5)
 
-        time.sleep(8)  # delay before retrying to open port again
-
-# ─── START SERIAL THREAD HERE (now safe) ──────────────────────────────────
+# Start serial thread
 if SERIAL_ENABLED:
     print("[MAIN] Starting Serial thread...")
     threading.Thread(target=serial_worker, daemon=True, name="SerialReader").start()
 
-# ─── Keep-alive thread ─────────────────────────────────────────────────────
+# ─── KEEP-ALIVE THREAD ────────────────────────────────────────────────────
 def keep_alive():
     while True:
         print("[KEEP ALIVE] Server still running - " + datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -444,8 +402,7 @@ def keep_alive():
 
 threading.Thread(target=keep_alive, daemon=True).start()
 
-# ─── STARTUP DEBUG & TABLES ───────────────────────────────────────────────
-
+# ─── STARTUP ──────────────────────────────────────────────────────────────
 print("[APP START] Entering startup block")
 try:
     with app.app_context():
@@ -453,26 +410,20 @@ try:
         db.create_all()
         print("[STARTUP] Tables created or already exist")
 
-        # Seed default PalayanConfig if missing
+        # Ensure default config exists
         if not PalayanConfig.query.first():
             default = PalayanConfig()
             db.session.add(default)
             db.session.commit()
             print("[STARTUP] Created default PalayanConfig")
-        else:
-            print("[STARTUP] PalayanConfig already exists")
 
-        # Seed initial owner account (only if no owners exist)
+        # Seed initial owner if none exists
         if not User.query.filter_by(role='owner').first():
             print("[STARTUP] No owner account found → creating default owner")
-
             owner_email    = os.environ.get('DEFAULT_OWNER_EMAIL',    'owner@farmlink.ph')
             owner_fullname = os.environ.get('DEFAULT_OWNER_NAME',     'Initial Farm Owner')
             owner_password = os.environ.get('DEFAULT_OWNER_PASSWORD', 'BennyLantacon')
             owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-INIT-413')
-
-            if owner_password == 'ChangeThis123Secure!':
-                print("[SEED WARNING] Using fallback password → HIGHLY RECOMMENDED: set DEFAULT_OWNER_PASSWORD env var!")
 
             hashed_pw = generate_password_hash(owner_password)
 
@@ -488,17 +439,7 @@ try:
 
             db.session.add(default_owner)
             db.session.commit()
-
-            print("[STARTUP] Default owner created successfully:")
-            print(f"  Email:       {owner_email}")
-            print(f"  Full name:   {owner_fullname}")
-            print(f"  Access code: {owner_code}")
-            print("  Password:    (hashed from env var or fallback)")
-            print("  → Log in as owner using these credentials.")
-        else:
-            print("[STARTUP] At least one owner already exists → skipping owner seed")
-
-        print("[STARTUP] Completed successfully")
+            print("[STARTUP] Default owner created successfully")
 
 except Exception as startup_err:
     print("[STARTUP CRASH] Failed during startup")
@@ -529,29 +470,22 @@ def api_data():
 
 @app.route('/api/ingest', methods=['POST'])
 def ingest_sensor_data():
-    """
-    Endpoint for devices (LoRa gateway, MCU, etc.) to push current sensor readings.
-    Also handles solenoid state changes and creates alerts when needed.
-    """
     data = request.get_json()
     if not data:
         return jsonify({"ok": False, "error": "No JSON payload received"}), 400
 
-    # ─── Get current config (there should be only one row) ───────────────────────
     config = PalayanConfig.query.first()
     if not config:
-        return jsonify({"ok": False, "error": "No configuration found in database"}), 500
+        return jsonify({"ok": False, "error": "No configuration found"}), 500
 
     now = datetime.utcnow()
 
-    # ─── Extract values with safe fallbacks ──────────────────────────────────────
     moisture    = data.get('moisture')
     temperature = data.get('temperature')
     humidity    = data.get('humidity')
     light       = data.get('light')
-    solenoid_new = data.get('solenoid_open') or data.get('solenoid')   # accept both names
+    solenoid_new = data.get('solenoid_open') or data.get('solenoid')
 
-    # Convert to proper types (be forgiving with incoming data)
     try:
         if moisture    is not None: moisture    = float(moisture)
         if temperature is not None: temperature = float(temperature)
@@ -559,110 +493,30 @@ def ingest_sensor_data():
         if light       is not None: light       = float(light)
         if solenoid_new is not None:
             solenoid_new = solenoid_new in [1, '1', True, 'true', 'on', 'OPEN']
-    except (ValueError, TypeError):
-        pass  # keep old value if conversion fails
+    except:
+        pass
 
-    # ─── Remember previous solenoid state ────────────────────────────────────────
     was_open = config.solenoid_open
 
-    # ─── Update current values (only if new value was actually sent) ─────────────
     if moisture    is not None: config.current_moisture    = moisture
     if temperature is not None: config.current_temperature = temperature
     if humidity    is not None: config.current_humidity    = humidity
     if light       is not None: config.current_light       = light
 
-    # ─── Handle solenoid state change + track last open time ─────────────────────
     if solenoid_new is not None:
         config.solenoid_open = solenoid_new
-
         if solenoid_new and not was_open:
-            # Just opened → record timestamp
             config.last_solenoid_open_at = now
             config.last_solenoid_duration_sec = None
-            add_log(
-                title="Solenoid Opened",
-                message="Water pump / solenoid turned ON",
-                log_type="irrigation"
-            )
-
+            add_log("Solenoid Opened", "Water pump / solenoid turned ON", "irrigation")
         elif not solenoid_new and was_open:
-            # Just closed → calculate duration
             if config.last_solenoid_open_at:
                 duration_sec = (now - config.last_solenoid_open_at).total_seconds()
                 config.last_solenoid_duration_sec = int(duration_sec)
+                add_log("Solenoid Closed", f"Was open for {duration_sec//60} min {duration_sec%60} sec", "irrigation")
 
-                min_part = int(duration_sec // 60)
-                sec_part = int(duration_sec % 60)
-
-                add_log(
-                    title="Solenoid Closed",
-                    message=f"Water pump was open for {min_part} min {sec_part} sec",
-                    log_type="irrigation"
-                )
-
-    # ─── Always update last_updated timestamp ────────────────────────────────────
     config.last_updated = now
 
-    # Inside /api/ingest, after updating other values
-
-    solenoid_new = data.get('solenoid_open') or data.get('solenoid')
-
-    if solenoid_new is not None:
-            try:
-                new_state = solenoid_new in [1, '1', True, 'true', 'on', 'OPEN']
-            except:
-                new_state = config.solenoid_open  # fallback
-
-            was_open = config.solenoid_open
-
-            if new_state != was_open:
-                if new_state:
-                    # Just turned ON
-                    add_log(
-                        title="Solenoid Opened",
-                        message="Water pump / solenoid turned ON (manual or auto)",
-                        log_type="irrigation"
-                    )
-                else:
-                    # Just turned OFF
-                    add_log(
-                        title="Solenoid Closed",
-                        message="Water pump / solenoid turned OFF",
-                        log_type="irrigation"
-                    )
-
-            config.solenoid_open = new_state
-
-    # ─── Basic alert generation (when data looks suspicious) ─────────────────────
-    alerts_created = 0
-
-    # Were we offline for a long time before this packet?
-    if config.last_updated:  # avoid first packet edge case
-        offline_seconds = (now - config.last_updated).total_seconds()
-        if offline_seconds > 180:  # > 3 minutes
-            alert = Alert(
-                title="Device was offline",
-                message=f"No data received for ~{offline_seconds//60} minutes – possible LoRa/MCU disconnect",
-                alert_type="connection",
-                severity=7
-            )
-            db.session.add(alert)
-            alerts_created += 1
-
-    # Very basic sensor sanity check
-    if moisture is not None and (moisture < 0 or moisture > 100):
-        alert = Alert(
-            title="Invalid moisture reading",
-            message=f"Received moisture = {moisture}% (out of range)",
-            alert_type="sensor",
-            severity=5
-        )
-        db.session.add(alert)
-        alerts_created += 1
-
-    # You can add similar checks for temperature, humidity, light if desired
-
-    # ─── Save sensor history (even if some values are missing) ───────────────────
     reading = SensorReading(
         moisture    = config.current_moisture,
         temperature = config.current_temperature,
@@ -672,14 +526,11 @@ def ingest_sensor_data():
     )
     db.session.add(reading)
 
-    # ─── Commit everything ───────────────────────────────────────────────────────
     try:
         db.session.commit()
-
-        response_data = {
+        return jsonify({
             "ok": True,
             "message": "Data ingested successfully",
-            "alerts_created": alerts_created,
             "current": {
                 "moisture": config.current_moisture,
                 "temperature": config.current_temperature,
@@ -688,26 +539,33 @@ def ingest_sensor_data():
                 "solenoid_open": config.solenoid_open,
                 "last_updated": config.last_updated.isoformat()
             }
-        }
-
-        if config.last_solenoid_open_at:
-            response_data["current"]["last_solenoid_open"] = config.last_solenoid_open_at.isoformat()
-
-        if config.last_solenoid_duration_sec is not None:
-            response_data["current"]["last_duration_sec"] = config.last_solenoid_duration_sec
-
-        return jsonify(response_data), 200
-
+        }), 200
     except Exception as e:
         db.session.rollback()
         print(f"[INGEST ERROR] {str(e)}")
         return jsonify({"ok": False, "error": "Database error during ingest"}), 500
-    
+
 @app.route("/api/alerts")
 @jwt_required(optional=True)
 def api_alerts():
     alerts = Alert.query.order_by(Alert.timestamp.desc()).limit(50).all()
     return jsonify([a.to_dict() for a in alerts])
+
+@app.route('/api/start-auto', methods=['POST'])
+@jwt_required()
+def start_auto():
+    config = PalayanConfig.query.first()
+    if not config:
+        return jsonify({'ok': False, 'error': 'No configuration found'}), 500
+
+    config.auto_mode = True
+    try:
+        db.session.commit()
+        add_log("Auto Watering", "Manually triggered by user", "irrigation")
+        return jsonify({'ok': True, 'message': 'Auto watering mode activated'})
+    except:
+        db.session.rollback()
+        return jsonify({'ok': False, 'error': 'Failed to activate auto mode'}), 500
 
 @app.route("/api/status")
 @jwt_required(optional=True)
@@ -716,7 +574,6 @@ def api_status():
     if not config:
         return jsonify({"lora": False, "mcu1": False, "mcu2": False, "auto_mode": False})
 
-    # Use utcnow() → naive datetime to match DB column
     now_utc = datetime.now(timezone.utc)
     last_updated = config.last_updated
 
@@ -757,76 +614,6 @@ def get_logs():
         "logs": logs_list
     })
 
-@app.route('/api/update_profile', methods=['POST'])
-@jwt_required()
-def update_profile():
-    current_email = get_jwt_identity()
-    current_user = User.query.filter_by(email=current_email).first()
-    if not current_user:
-        return jsonify({"ok": False, "error": "User not found"}), 404
-
-    data = request.get_json()
-    fullname = data.get('fullname')
-    if not fullname:
-        return jsonify({"ok": False, "error": "Full name required"}), 400
-
-    current_user.fullname = fullname
-    db.session.commit()
-
-    return jsonify({"ok": True, "message": "Profile updated", "fullname": fullname})
-
-@app.route('/api/update_avatar', methods=['POST', 'OPTIONS'])
-@jwt_required()
-def update_avatar():
-    if request.method == 'OPTIONS':
-        return jsonify({}), 200  # Handle CORS preflight
-
-    current_email = get_jwt_identity()
-    user = User.query.filter_by(email=current_email).first()
-    if not user:
-        return jsonify({"ok": False, "error": "User not found"}), 404
-
-    data = request.get_json()
-    if not data or 'avatar' not in data:
-        return jsonify({"ok": False, "error": "Missing 'avatar' field"}), 400
-
-    avatar_base64 = data['avatar']
-    if not isinstance(avatar_base64, str) or not avatar_base64.startswith('data:image'):
-        return jsonify({"ok": False, "error": "Invalid image format"}), 400
-
-    # Optional: prevent huge images crashing the DB
-    if len(avatar_base64) > 2_000_000:  # roughly 1.5MB after base64 overhead
-        return jsonify({"ok": False, "error": "Image too large (max ~1.5MB)"}), 413
-
-    user.avatar_base64 = avatar_base64
-    db.session.commit()
-
-    return jsonify({"ok": True, "message": "Avatar updated"})
-
-@app.route('/api/access-codes', methods=['GET'])
-@jwt_required()
-def get_access_codes():
-    current_email = get_jwt_identity()
-    current_user = User.query.filter_by(email=current_email).first()
-    if not current_user:
-        return jsonify({'ok': False, 'error': 'User not found'}), 404
-    if current_user.role != 'owner':
-        return jsonify({'ok': False, 'error': 'Owners only'}), 403
-
-    users = User.query.filter_by(role='owner').all()
-    codes = [{'email': u.email, 'code': u.access_code} for u in users if u.access_code]
-    return jsonify({'ok': True, 'codes': codes})
-
-@app.route('/debug-env')
-def debug_env():
-    env_value = os.environ.get('DATABASE_URL', 'MISSING_ENV_VAR')
-    uri_used = app.config.get('SQLALCHEMY_DATABASE_URI', 'NOT_SET')
-    return jsonify({
-        'env_DATABASE_URL': env_value[:60] + '...' if len(env_value) > 60 else env_value,
-        'actual_uri_used': uri_used[:60] + '...' if len(uri_used) > 60 else uri_used,
-        'is_postgres': 'postgresql' in uri_used if uri_used else False
-    })
-
 @app.route('/api/settings', methods=['GET', 'POST'])
 @jwt_required()
 def api_settings():
@@ -834,8 +621,6 @@ def api_settings():
     current_user = User.query.filter_by(email=current_email).first()
     if not current_user:
         return jsonify({'ok': False, 'error': 'User not found'}), 404
-
-    print("[SETTINGS] User:", {'email': current_user.email, 'role': current_user.role})
 
     config = PalayanConfig.query.first()
     if not config:
@@ -849,26 +634,26 @@ def api_settings():
         if not data:
             return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
 
-        # Use ACTUAL model field names
-        config.min_moisture = data.get('threshold_zoneA_min', config.min_moisture)
-        config.max_moisture = data.get('threshold_zoneA_max', config.max_moisture)
-        # If you have zoneB fields, add them here or remove from payload
-        config.auto_water_time = data.get('auto_water_time', config.auto_water_time)
-        config.duration_minutes = data.get('duration', config.duration_minutes)
-        config.max_temperature = data.get('max_temp', config.max_temperature)
-        config.min_humidity = data.get('min_humidity', config.min_humidity)
-        config.auto_mode = data.get('auto_mode', config.auto_mode)
+        config.min_moisture     = data.get('threshold_zoneA_min', config.min_moisture)
+        config.max_moisture     = data.get('threshold_zoneA_max', config.max_moisture)
+        config.auto_water_time  = data.get('auto_water_time',     config.auto_water_time)
+        config.duration_minutes = data.get('duration',            config.duration_minutes)
+        config.max_temperature  = data.get('max_temp',            config.max_temperature)
+        config.min_humidity     = data.get('min_humidity',        config.min_humidity)
 
-        db.session.commit()
-        return jsonify({"ok": True, "message": "Settings saved"})
+        try:
+            db.session.commit()
+            return jsonify({"ok": True, "message": "Settings saved"})
+        except Exception as e:
+            db.session.rollback()
+            print(f"[SETTINGS SAVE ERROR] {e}")
+            return jsonify({"ok": False, "error": "Failed to save settings"}), 500
 
-    # GET: return actual fields
+    # GET
     return jsonify({
         "ok": True,
         "threshold_zoneA_min": config.min_moisture,
         "threshold_zoneA_max": config.max_moisture,
-        "threshold_zoneB_min": 35,  # hardcoded fallback (add fields to model if needed)
-        "threshold_zoneB_max": 65,
         "auto_water_time": config.auto_water_time,
         "duration": config.duration_minutes,
         "max_temp": config.max_temperature,
@@ -878,34 +663,35 @@ def api_settings():
         "read_only": current_user.role != 'owner'
     })
 
-@app.route('/api/report')
+@app.route('/api/reconnect-lora', methods=['POST'])
 @jwt_required()
-def api_report():
-    current_email = get_jwt_identity()
-    current_user = User.query.filter_by(email=current_email).first()
-    if not current_user:
-        return jsonify({'ok': False, 'error': 'User not found'}), 404
-    if current_user.role != 'owner':
-        return jsonify({'ok': False, 'error': 'Owners only'}), 403
+def reconnect_lora():
+    global SERIAL_RECONNECT_REQUEST
+    SERIAL_RECONNECT_REQUEST = True
+    return jsonify({'ok': True, 'message': 'Reconnect requested'})
 
-    from datetime import timedelta
-    cutoff = datetime.utcnow() - timedelta(days=30)
-    readings = SensorReading.query.filter(SensorReading.timestamp >= cutoff).order_by(SensorReading.timestamp.desc()).all()
+@app.route('/api/water', methods=['POST'])
+@jwt_required()
+def manual_water():
+    data = request.get_json() or {}
+    duration = data.get('duration', 10)  # minutes
 
-    output = io.StringIO()
-    output.write("Timestamp,Moisture,Temperature,Humidity,Light\n")
-    for r in readings:
-        output.write(f"{r.timestamp},{r.moisture},{r.temperature},{r.humidity},{r.light}\n")
+    add_log("Manual Watering", f"Started for {duration} minutes by user", "irrigation")
 
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment;filename=farmlink_report.csv"})
+    # Optional: send command if serial is active
+    # In real implementation you might want a queue or direct write here
 
-# ─── REGISTRATION ─────────────────────────────────────────────────────────
+    return jsonify({
+        'ok': True,
+        'message': f'Watering started for {duration} minutes'
+    })
+
+# ─── AUTH ─────────────────────────────────────────────────────────────────
 
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.get_json(silent=True)
-    
-    if data is None:
+    if not data:
         return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
 
     email       = data.get('email')
@@ -915,14 +701,10 @@ def register():
     access_code = data.get('access_code')
 
     if not all([email, fullname, password]):
-        missing = [k for k, v in {'email': email, 'fullname': fullname, 'password': password}.items() if not v]
-        return jsonify({
-            'ok': False,
-            'error': f'Missing required fields: {", ".join(missing)}'
-        }), 400
+        return jsonify({'ok': False, 'error': 'Missing required fields'}), 400
 
     if role not in ['sakada', 'owner']:
-        return jsonify({'ok': False, 'error': 'Invalid role. Must be "sakada" or "owner"'}), 400
+        return jsonify({'ok': False, 'error': 'Invalid role'}), 400
 
     if User.query.filter_by(email=email).first():
         return jsonify({'ok': False, 'error': 'Email already registered'}), 409
@@ -941,61 +723,18 @@ def register():
     if role == 'owner':
         sent_access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
         new_user.access_code = sent_access_code
-        
-        success = send_access_code_email(email, sent_access_code)
-        if not success:
-            print(f"[WARNING] Failed to send access code email to {email}")
+        send_access_code_email(email, sent_access_code)
 
     try:
         db.session.add(new_user)
         db.session.commit()
-        
         message = 'Registered successfully'
         if role == 'owner' and sent_access_code:
-            message += ' — your new access code has been sent to your email'
-
-        return jsonify({
-            'ok': True,
-            'message': message,
-            'role': role
-        }), 201
-
-    except Exception as e:
+            message += ' — access code sent to email'
+        return jsonify({'ok': True, 'message': message, 'role': role}), 201
+    except:
         db.session.rollback()
-        print(f"[REGISTER ERROR] Database commit failed: {str(e)}")
-        return jsonify({'ok': False, 'error': 'Failed to create account. Please try again.'}), 500
-
-@app.route('/api/resend-owner-code', methods=['POST'])
-def resend_owner_code():
-    data = request.get_json()
-    email = data.get('email')
-
-    if not email:
-        return jsonify({'ok': False, 'error': 'Email required'}), 400
-
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        return jsonify({'ok': False, 'error': 'No account found with this email'}), 404
-
-    if not user.access_code:
-        user.access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        db.session.commit()
-
-    success = send_access_code_email(
-        recipient_email = email,
-        access_code     = user.access_code
-    )
-
-    if success:
-        return jsonify({
-            'ok': True,
-            'message': 'Access code sent to your email'
-        }), 200
-    else:
-        return jsonify({
-            'ok': False,
-            'error': 'Failed to send access code email'
-        }), 500
+        return jsonify({'ok': False, 'error': 'Failed to create account'}), 500
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -1005,7 +744,7 @@ def login():
     role      = data.get('role')
     admincode = data.get('admincode') if role == 'owner' else None
 
-    if not email or not password or not role:
+    if not all([email, password, role]):
         return jsonify({'ok': False, 'error': 'Missing required fields'}), 400
 
     user = User.query.filter_by(email=email).first()
@@ -1013,23 +752,16 @@ def login():
         return jsonify({'ok': False, 'error': 'Invalid email or password'}), 401
 
     if user.role != role:
-        return jsonify({'ok': False, 'error': 'Role mismatch for this account'}), 403
+        return jsonify({'ok': False, 'error': 'Role mismatch'}), 403
 
     if role == 'owner':
         if not user.access_code or admincode != user.access_code:
             return jsonify({'ok': False, 'error': 'Invalid or missing access code'}), 403
-        
         if not user.verified:
             user.verified = True
             db.session.commit()
 
-        #success = send_access_code_email(email, user.access_code)
-        #if success:
-        #    print(f"[LOGIN EMAIL] Access code re-sent to owner: {email}")
-        #else:
-        #    print(f"[LOGIN EMAIL] Failed to send to owner: {email}")
-
-    token = create_access_token(identity=user.email)  # FIXED: string email
+    token = create_access_token(identity=user.email)
 
     return jsonify({
         'ok': True,
@@ -1037,7 +769,7 @@ def login():
         'fullname': user.fullname,
         'email': user.email,
         'role': user.role,
-        'message': 'Login successful' + (' — access code re-sent to email' if role == 'owner' else '')
+        'message': 'Login successful'
     }), 200
 
 @app.route('/api/me', methods=['GET'])
@@ -1045,7 +777,6 @@ def login():
 def get_current_user():
     current_email = get_jwt_identity()
     user = User.query.filter_by(email=current_email).first()
-    
     if not user:
         return jsonify({"ok": False, "error": "User not found"}), 404
 
@@ -1054,7 +785,7 @@ def get_current_user():
         "email": user.email,
         "fullname": user.fullname,
         "role": user.role,
-        "avatar": user.avatar_base64   # ← ADD THIS LINE
+        "avatar": user.avatar_base64
     })
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────
