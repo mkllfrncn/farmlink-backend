@@ -7,6 +7,8 @@ Flask-Mail==0.10.0                  # ← You can keep this for local/dev testin
 Flask-SQLAlchemy==3.1.1
 flask-jwt-extended>=4.6.0
 psycopg2-binary>=2.9.9 
+resend>=2.0.0
+flask-migrate==4.1.0
 
 # Database & MySQL driver
 SQLAlchemy==2.0.46
@@ -29,9 +31,3 @@ packaging==26.0
 python-dotenv==1.2.1
 typing_extensions==4.15.0
 Werkzeug==3.1.5
-
-# ─── Email sending via Resend API (replaces blocked SMTP) ───────────────────
-resend>=2.0.0                       # Official Resend Python SDK – latest is ~2.22 as of Feb 2026
-
-# Optional: if you want stricter version pinning
-# resend==2.22.0
