@@ -36,11 +36,13 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
-def serve_static(path):
-    if path != "" and os.path.exists(os.path.join('static', path)):
-        return send_from_directory('static', path)
-    # Fallback: serve index/login as main page
-    return send_from_directory('static', 'login.html')
+def serve_frontend(path):
+    base_dir = 'www'
+
+    if path != "" and os.path.exists(os.path.join(base_dir, path)):
+        return send_from_directory(base_dir, path)
+
+    return send_from_directory(base_dir, 'login.html')  
 
 # For production on Render/Heroku/etc.
 if __name__ == '__main__':
