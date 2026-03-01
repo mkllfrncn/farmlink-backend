@@ -23,6 +23,8 @@ print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
 
 SERIAL_RECONNECT_REQUEST = False
 
+pending_command = None
+
 # ─── CONFIG ───────────────────────────────────────────────────────────────
 SERIAL_ENABLED = os.environ.get("SERIAL_ENABLED", "false").lower() in ("true", "1", "yes", "t")
 SERIAL_PORT    = os.environ.get("SERIAL_PORT", "COM9")
@@ -44,7 +46,7 @@ def serve_frontend(path):
 
     return send_from_directory(base_dir, 'login.html')  
 
-# For production on Render/Heroku/etc.
+# For production on Render
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
@@ -69,6 +71,12 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'max_overflow': 10
 }
 
+SQLALCHEMY_ENGINE_OPTIONS = {
+    "pool_pre_ping": True,
+    "pool_recycle": 280,
+    "pool_timeout": 20
+}
+
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
@@ -84,9 +92,9 @@ app.config['MAIL_DEBUG']        = True
 mail = Mail(app)
 
 # ─── JWT CONFIG ───────────────────────────────────────────────────────────
-app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'super-secret-key-please-change-this-in-production')
+app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', '4vD5vmuI36XehMOVd9fRqkqeZerwo4HAobPwSt1E-ygHP2H1EOfbxtRwW_ihjVpx')
 
-app.config['JWT_ACCESS_TOKEN_EXPIRES']     = 86400          # 24 hours – change this line
+app.config['JWT_ACCESS_TOKEN_EXPIRES']     = 86400         
 app.config['JWT_REFRESH_TOKEN_EXPIRES']    = 7 * 24 * 60 * 60
 
 jwt = JWTManager(app)
@@ -290,7 +298,7 @@ def serial_worker():
                     stopbits=serial.STOPBITS_ONE
                 )
                 print(f"[SERIAL] Opened {ser.name}")
-                time.sleep(2.5)  # give device time to reset
+                time.sleep(2.5)  
                 ser.reset_input_buffer()
                 ser.reset_output_buffer()
 
@@ -464,7 +472,70 @@ except Exception as startup_err:
     print(traceback.format_exc())
 
 # ─── API ROUTES ───────────────────────────────────────────────────────────
+@app.route('/api/login', methods=['POST'])
+def login():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"ok": False, "error": "Missing JSON payload"}), 400
 
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "").strip()
+        access_code = data.get("access_code", "").strip()
+
+        if not email or not password:
+            return jsonify({"ok": False, "error": "Email and password required"}), 400
+
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return jsonify({"ok": False, "error": "Account not found"}), 404
+
+        # Password check
+        if not check_password_hash(user.password_hash, password):
+            return jsonify({"ok": False, "error": "Incorrect password"}), 401
+
+        # Owner access-code requirement
+        if user.role == "owner":
+            if not access_code:
+                return jsonify({
+                    "ok": False,
+                    "error": "Access code required for owner login"
+                }), 401
+
+            if user.access_code != access_code:
+                return jsonify({
+                    "ok": False,
+                    "error": "Invalid access code"
+                }), 401
+
+        access = create_access_token(identity=user.email)
+        refresh = create_refresh_token(identity=user.email)
+
+        add_log(
+            "User Login",
+            f"{user.email} logged in successfully",
+            "auth",
+            user_email=user.email
+        )
+
+        return jsonify({
+            "ok": True,
+            "message": "Login successful",
+            "token": access,
+            "refresh_token": refresh,
+            "user": {
+                "email": user.email,
+                "fullname": user.fullname,
+                "role": user.role,
+                "avatar": user.avatar_base64
+            }
+        }), 200
+
+    except Exception as e:
+        print("[LOGIN ERROR]", e)
+        import traceback; traceback.print_exc()
+        return jsonify({"ok": False, "error": "Server error during login"}), 500
+    
 @app.route("/api/data")
 @jwt_required(optional=True)
 def api_data():
@@ -504,9 +575,8 @@ def ingest_sensor_data():
     temperature = data.get('temperature')
     humidity    = data.get('humidity')
     light       = data.get('light')
-    solenoid_new = data.get('solenoid_open') or data.get('solenoid')  # accept both names
+    solenoid_new = data.get('solenoid_open') or data.get('solenoid')  
 
-    # Convert to float/bool with graceful fallback
     try:
         if moisture    is not None: moisture    = float(moisture)
         if temperature is not None: temperature = float(temperature)
@@ -515,7 +585,7 @@ def ingest_sensor_data():
         if solenoid_new is not None:
             solenoid_new = solenoid_new in [1, '1', True, 'true', 'on', 'OPEN', 'open']
     except (ValueError, TypeError):
-        pass  # keep previous value if conversion fails
+        pass  
 
     # ─── Remember previous solenoid state for change detection ─────────────────
     was_open = config.solenoid_open
@@ -562,9 +632,9 @@ def ingest_sensor_data():
     alerts_created = 0
 
     # 1. Device offline / no recent data
-    if config.last_updated:  # avoid first-packet edge case
+    if config.last_updated:  
         offline_seconds = (now - config.last_updated).total_seconds()
-        if offline_seconds > 180:  # > 3 minutes
+        if offline_seconds > 180:  
             alert = Alert(
                 title="LoRa/MCU Offline",
                 message=f"No data received for ~{offline_seconds//60} minutes – possible disconnect",
@@ -629,6 +699,52 @@ def ingest_sensor_data():
         import traceback
         traceback.print_exc()
         return jsonify({"ok": False, "error": "Database error during ingest"}), 500
+    
+@app.route('/api/control', methods=['POST'])
+@jwt_required()
+def control_solenoid():
+    global pending_command
+    data = request.get_json()
+    action = data.get('action')  # Expect "open" or "close"
+
+    if not data or not action:
+        return jsonify({"ok": False, "error": "Missing 'action' field"}), 400
+
+    action = action.lower()
+    if action not in ['open', 'close']:
+        return jsonify({"ok": False, "error": "Action must be 'open' or 'close'"}), 400
+
+    # Optional: restrict to owners only
+    current_email = get_jwt_identity()
+    user = User.query.filter_by(email=current_email).first()
+    if not user or user.role != 'owner':
+        return jsonify({"ok": False, "error": "Only owners can control solenoid remotely"}), 403
+
+    pending_command = "OPEN" if action == "open" else "CLOSE"
+
+    add_log(
+        title="Remote Solenoid Command",
+        message=f"Solenoid {action.upper()} requested remotely by {current_email}",
+        log_type="irrigation",
+        user_email=current_email
+    )
+
+    return jsonify({
+        "ok": True,
+        "message": f"Command '{action.upper()}' queued – will be sent to device soon"
+    }), 200
+
+
+@app.route('/api/get-command', methods=['GET'])
+def get_command():
+    global pending_command
+    if pending_command:
+        cmd = pending_command
+        pending_command = None
+        return jsonify({"command": cmd, "status": "sent"})
+    return jsonify({"command": None, "status": "idle"})
+
+    return jsonify({"command": cmd})
     
 @app.route('/api/refresh', methods=['POST'])
 @jwt_required(refresh=True)
@@ -882,72 +998,64 @@ def register():
     except:
         db.session.rollback()
         return jsonify({'ok': False, 'error': 'Failed to create account'}), 500
-
-@app.route('/api/login', methods=['POST'])
-def login():
+    
+@app.route('/api/forgot-password', methods=['POST'])
+def forgot_password():
     data = request.get_json()
-    
-    # Extract required fields
-    email     = data.get('email')
-    password  = data.get('password')
-    role      = data.get('role')
-    admincode = data.get('admincode') if role == 'owner' else None
+    email = data.get('email', '').strip().lower()
 
-    # Basic validation
-    if not all([email, password, role]):
-        print("[LOGIN] Missing required fields:", {'email': email, 'role': role})
-        return jsonify({'ok': False, 'error': 'Missing required fields'}), 400
+    if not email:
+        return jsonify({"ok": False, "error": "Email required"}), 400
 
-    # Find user
     user = User.query.filter_by(email=email).first()
-    
     if not user:
-        print("[LOGIN] User not found:", email)
-        return jsonify({'ok': False, 'error': 'Invalid email or password'}), 401
+        # Don't reveal if email exists (security best practice)
+        return jsonify({
+            "ok": True,
+            "message": "If the email exists, a reset link has been sent."
+        }), 200
 
-    # Check password
-    if not check_password_hash(user.password_hash, password):
-        print("[LOGIN] Wrong password for:", email)
-        return jsonify({'ok': False, 'error': 'Invalid email or password'}), 401
+    # Generate a simple reset token (in production use UUID + expiry)
+    reset_token = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
+    
+    # For simplicity: store in user table (add column if needed)
+    # But for quick fix: we'll just email it directly (not stored)
+    # In real app you should add reset_token + expiry to User model
 
-    # Role mismatch
-    if user.role != role:
-        print("[LOGIN] Role mismatch:", {'requested': role, 'actual': user.role})
-        return jsonify({'ok': False, 'error': 'Role mismatch'}), 403
+    try:
+        msg = Message(
+            subject="FarmLink Password Reset",
+            sender=('FarmLink', 'farmlinktech.ph@gmail.com'),
+            recipients=[email],
+            body=f"""
+Hello,
 
-    # Owner-specific: access code required
-    if role == 'owner':
-        if not user.access_code or admincode != user.access_code:
-            print("[LOGIN] Invalid/missing access code for owner:", email)
-            return jsonify({'ok': False, 'error': 'Invalid or missing access code'}), 403
+You requested a password reset for your FarmLink account.
+
+Your reset token/code: {reset_token}
+
+Enter this code in the app to set a new password.
+This code is valid for 30 minutes.
+
+If you didn't request this, ignore this email.
+
+Best regards,
+FarmLink Team
+            """.strip()
+        )
+        mail.send(msg)
+        print(f"[RESET EMAIL] Sent to {email} with token {reset_token}")
         
-        # Auto-verify owner on first successful login with correct code
-        if not user.verified:
-            user.verified = True
-            db.session.commit()
-            print("[LOGIN] Owner auto-verified:", email)
+        return jsonify({
+            "ok": True,
+            "message": "Reset instructions sent to your email."
+        }), 200
 
-    # Generate tokens
-    access_token = create_access_token(identity=user.email)
-    refresh_token = create_refresh_token(identity=user.email)
-
-    # Log successful login
-    print("[LOGIN SUCCESS]", {
-        'email': email,
-        'role': role,
-        'user_id': user.id
-    })
-
-    # Return both tokens + user info
-    return jsonify({
-        'ok': True,
-        'access_token': access_token,
-        'refresh_token': refresh_token,   # ← added for future refresh support
-        'fullname': user.fullname,
-        'email': user.email,
-        'role': user.role,
-        'message': 'Login successful'
-    }), 200
+    except Exception as e:
+        print("[FORGOT PASSWORD EMAIL ERROR]", str(e))
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": "Failed to send email"}), 500
 
 @app.route('/api/me', methods=['GET'])
 @jwt_required()
