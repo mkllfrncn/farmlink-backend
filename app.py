@@ -5,6 +5,7 @@ import random
 import string
 import os
 import io
+import csv
 from flask import Flask, jsonify, request, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
@@ -15,6 +16,7 @@ from flask_jwt_extended import JWTManager, create_access_token, create_refresh_t
 from dotenv import load_dotenv
 from flask_migrate import Migrate
 from flask import send_from_directory
+from flask import make_response
 
 load_dotenv()  # This loads .env automatically
 
@@ -426,6 +428,7 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True).start()
 
 # ─── STARTUP ──────────────────────────────────────────────────────────────
+# ─── STARTUP ──────────────────────────────────────────────────────────────
 print("[APP START] Entering startup block")
 try:
     with app.app_context():
@@ -440,17 +443,20 @@ try:
             db.session.commit()
             print("[STARTUP] Created default PalayanConfig")
 
-        # Seed initial owner if none exists
-        if not User.query.filter_by(role='owner').first():
-            print("[STARTUP] No owner account found → creating default owner")
-            owner_email    = os.environ.get('DEFAULT_OWNER_EMAIL',    'owner@farmlink.ph')
-            owner_fullname = os.environ.get('DEFAULT_OWNER_NAME',     'Initial Farm Owner')
+        # ─── Safer owner seeding ────────────────────────────────────────────
+        owner_email = os.environ.get('DEFAULT_OWNER_EMAIL', 'owner@farmlink.ph').strip().lower()
+
+        owner = User.query.filter_by(email=owner_email).first()
+
+        if not owner:
+            print("[STARTUP] No user found with owner email → creating default owner")
+            owner_fullname = os.environ.get('DEFAULT_OWNER_NAME', 'Initial Farm Owner')
             owner_password = os.environ.get('DEFAULT_OWNER_PASSWORD', 'BennyLantacon')
-            owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-INIT-413')
+            owner_code     = os.environ.get('DEFAULT_OWNER_CODE', 'FRMLNK-INIT-413')
 
             hashed_pw = generate_password_hash(owner_password)
 
-            default_owner = User(
+            owner = User(
                 email         = owner_email,
                 fullname      = owner_fullname,
                 password_hash = hashed_pw,
@@ -459,10 +465,15 @@ try:
                 verified      = True,
                 created_at    = datetime.utcnow()
             )
-
-            db.session.add(default_owner)
+            db.session.add(owner)
             db.session.commit()
             print("[STARTUP] Default owner created successfully")
+
+        elif owner.role != 'owner':
+            print(f"[STARTUP] Owner email exists but role is '{owner.role}' → fixing to 'owner'")
+            owner.role = 'owner'
+            db.session.commit()
+            print("[STARTUP] Owner role fixed")
 
 except Exception as startup_err:
     print("[STARTUP CRASH] Failed during startup")
@@ -484,56 +495,60 @@ def login():
         access_code = data.get("access_code", "").strip()
 
         if not email or not password:
-            return jsonify({"ok": False, "error": "Email and password required"}), 400
+            return jsonify({"ok": False, "error": "Email and password are required"}), 400
 
+        # Find user (case-insensitive email)
         user = User.query.filter_by(email=email).first()
         if not user:
+            print(f"[LOGIN] User not found for email: {email}")
             return jsonify({"ok": False, "error": "Account not found"}), 404
+
+        # Debug: show what we found
+        print(f"[LOGIN] Found user ID={user.id}, email={user.email}, role={user.role}")
 
         # Password check
         if not check_password_hash(user.password_hash, password):
+            print(f"[LOGIN] Incorrect password for {email}")
             return jsonify({"ok": False, "error": "Incorrect password"}), 401
 
-        # Owner access-code requirement
+        # Owner must provide access code
         if user.role == "owner":
             if not access_code:
-                return jsonify({
-                    "ok": False,
-                    "error": "Access code required for owner login"
-                }), 401
+                print(f"[LOGIN] Missing access code for owner: {email}")
+                return jsonify({"ok": False, "error": "Access code required for owner login"}), 401
 
             if user.access_code != access_code:
-                return jsonify({
-                    "ok": False,
-                    "error": "Invalid access code"
-                }), 401
+                print(f"[LOGIN] Invalid access code for owner: {email}")
+                return jsonify({"ok": False, "error": "Invalid access code"}), 401
 
-        access = create_access_token(identity=user.email)
-        refresh = create_refresh_token(identity=user.email)
+        # Success: generate tokens
+        access_token = create_access_token(identity=user.email)
+        refresh_token = create_refresh_token(identity=user.email)
 
         add_log(
-            "User Login",
-            f"{user.email} logged in successfully",
-            "auth",
+            title="User Login",
+            message=f"{user.email} logged in successfully (role: {user.role})",
+            log_type="auth",
             user_email=user.email
         )
 
         return jsonify({
             "ok": True,
             "message": "Login successful",
-            "token": access,
-            "refresh_token": refresh,
+            "token": access_token,
+            "refresh_token": refresh_token,
             "user": {
                 "email": user.email,
                 "fullname": user.fullname,
                 "role": user.role,
-                "avatar": user.avatar_base64
+                "avatar": user.avatar_base64 or ""
             }
         }), 200
 
     except Exception as e:
-        print("[LOGIN ERROR]", e)
-        import traceback; traceback.print_exc()
+        print("[LOGIN ERROR]", str(e))
+        import traceback
+        traceback.print_exc()
         return jsonify({"ok": False, "error": "Server error during login"}), 500
     
 @app.route("/api/data")
@@ -744,7 +759,33 @@ def get_command():
         return jsonify({"command": cmd, "status": "sent"})
     return jsonify({"command": None, "status": "idle"})
 
-    return jsonify({"command": cmd})
+@app.route('/api/report', methods=['GET'])
+@jwt_required()
+def generate_report():
+    current_email = get_jwt_identity()
+    user = User.query.filter_by(email=current_email).first()
+    if not user or user.role != 'owner':
+        return jsonify({'ok': False, 'error': 'Owners only'}), 403
+
+    readings = SensorReading.query.order_by(SensorReading.timestamp.desc()).limit(1000).all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['Timestamp', 'Moisture', 'Temperature', 'Humidity', 'Light'])
+
+    for r in readings:
+        writer.writerow([
+            r.timestamp.isoformat(),
+            r.moisture,
+            r.temperature,
+            r.humidity,
+            r.light
+        ])
+
+    response = make_response(output.getvalue())
+    response.headers["Content-Disposition"] = "attachment; filename=sensor_report.csv"
+    response.headers["Content-type"] = "text/csv"
+    return response
     
 @app.route('/api/refresh', methods=['POST'])
 @jwt_required(refresh=True)
@@ -838,6 +879,32 @@ def get_logs():
         "ok": True,
         "logs": logs_list
     })
+
+@app.route('/api/resend-owner-code', methods=['POST'])
+def resend_owner_code():
+    data = request.get_json()
+    email = data.get('email', '').strip().lower()
+
+    if not email:
+        return jsonify({"ok": False, "error": "Email required"}), 400
+
+    user = User.query.filter_by(email=email, role='owner').first()
+    if not user:
+        # Security: Don't reveal if exists
+        return jsonify({"ok": True, "message": "If an owner account, code sent."}), 200
+
+    # New code
+    new_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
+    user.access_code = new_code
+
+    try:
+        db.session.commit()
+        send_access_code_email(email, new_code)  # Your existing function
+        return jsonify({"ok": True, "message": "New code sent to email."}), 200
+    except Exception as e:
+        db.session.rollback()
+        print("[RESEND ERROR]", str(e))
+        return jsonify({"ok": False, "error": "Failed to send"}), 500
 
 @app.route('/api/settings', methods=['GET', 'POST'])
 @jwt_required()
@@ -953,51 +1020,78 @@ def manual_water():
 
 @app.route('/api/register', methods=['POST'])
 def register():
-    data = request.get_json(silent=True)
-    if not data:
-        return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
-
-    email       = data.get('email')
-    fullname    = data.get('fullname')
-    password    = data.get('password')
-    role        = data.get('role', 'sakada')
-    access_code = data.get('access_code')
-
-    if not all([email, fullname, password]):
-        return jsonify({'ok': False, 'error': 'Missing required fields'}), 400
-
-    if role not in ['sakada', 'owner']:
-        return jsonify({'ok': False, 'error': 'Invalid role'}), 400
-
-    if User.query.filter_by(email=email).first():
-        return jsonify({'ok': False, 'error': 'Email already registered'}), 409
-
-    hashed_pw = generate_password_hash(password)
-
-    new_user = User(
-        email=email,
-        fullname=fullname,
-        password_hash=hashed_pw,
-        role=role,
-        verified=False
-    )
-
-    sent_access_code = None
-    if role == 'owner':
-        sent_access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-        new_user.access_code = sent_access_code
-        send_access_code_email(email, sent_access_code)
-
     try:
+        data = request.get_json(silent=True)
+        if not data:
+            return jsonify({'ok': False, "error": "Invalid or missing JSON payload"}), 400
+
+        email = data.get('email', '').strip().lower()
+        fullname = data.get('fullname', '').strip()
+        password = data.get('password', '').strip()
+        role = data.get('role', 'sakada').strip().lower()
+        access_code = data.get('access_code', '').strip()
+
+        # Validation
+        if not all([email, fullname, password]):
+            return jsonify({'ok': False, "error": "Email, full name, and password are required"}), 400
+
+        if role not in ['sakada', 'owner']:
+            return jsonify({'ok': False, "error": "Invalid role (must be 'sakada' or 'owner')"}), 400
+
+        if len(password) < 6:
+            return jsonify({'ok': False, "error": "Password must be at least 6 characters"}), 400
+
+        # Prevent duplicate email (unique constraint should already block, but double-check)
+        if User.query.filter_by(email=email).first():
+            return jsonify({'ok': False, "error": "Email already registered"}), 409
+
+        # Owner registration requires access code in payload (optional extra safety)
+        if role == 'owner' and not access_code:
+            return jsonify({'ok': False, "error": "Access code required for owner registration"}), 400
+
+        hashed_pw = generate_password_hash(password)
+
+        new_user = User(
+            email=email,
+            fullname=fullname,
+            password_hash=hashed_pw,
+            role=role,
+            verified=False,
+            access_code=access_code if role == 'owner' else None
+        )
+
+        sent_access_code = None
+        if role == 'owner':
+            # Generate and send new access code
+            sent_access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
+            new_user.access_code = sent_access_code
+            send_access_code_email(email, sent_access_code)
+
         db.session.add(new_user)
         db.session.commit()
-        message = 'Registered successfully'
+
+        message = 'Registered successfully as ' + role.capitalize()
         if role == 'owner' and sent_access_code:
-            message += ' — access code sent to email'
-        return jsonify({'ok': True, 'message': message, 'role': role}), 201
-    except:
+            message += f' — access code sent to {email}'
+
+        add_log(
+            title="User Registered",
+            message=f"New user: {email} as {role}",
+            log_type="auth"
+        )
+
+        return jsonify({
+            'ok': True,
+            'message': message,
+            'role': role
+        }), 201
+
+    except Exception as e:
         db.session.rollback()
-        return jsonify({'ok': False, 'error': 'Failed to create account'}), 500
+        print("[REGISTER ERROR]", str(e))
+        import traceback
+        traceback.print_exc()
+        return jsonify({'ok': False, "error": "Failed to create account"}), 500
     
 @app.route('/api/forgot-password', methods=['POST'])
 def forgot_password():
