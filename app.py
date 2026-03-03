@@ -16,7 +16,12 @@ from flask_jwt_extended import JWTManager, create_access_token, create_refresh_t
 from dotenv import load_dotenv
 from flask_migrate import Migrate
 from flask import send_from_directory
-from flask import make_response
+from flask import send_file, make_response
+from io import StringIO
+from datetime import datetime, timedelta
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from io import BytesIO
 
 load_dotenv()  # This loads .env automatically
 
@@ -24,8 +29,6 @@ print(f"[START] PORT from env: {os.environ.get('PORT', 'NOT SET')}")
 print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
 
 SERIAL_RECONNECT_REQUEST = False
-
-pending_command = None
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────
 SERIAL_ENABLED = os.environ.get("SERIAL_ENABLED", "false").lower() in ("true", "1", "yes", "t")
@@ -42,13 +45,11 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 @app.route('/<path:path>')
 def serve_frontend(path):
     base_dir = 'www'
-
     if path != "" and os.path.exists(os.path.join(base_dir, path)):
         return send_from_directory(base_dir, path)
 
-    return send_from_directory(base_dir, 'login.html')  
+    return send_from_directory(base_dir, 'login.html')  # For production on Render
 
-# For production on Render
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
@@ -282,7 +283,7 @@ def serial_worker():
     while True:
         try:
             if ser is None or not ser.is_open or SERIAL_RECONNECT_REQUEST:
-                print("🔄 Reconnecting to Serial/LoRa...")
+                print(" Reconnecting to Serial/LoRa...")
                 SERIAL_RECONNECT_REQUEST = False
 
                 if ser and ser.is_open:
@@ -428,7 +429,6 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True).start()
 
 # ─── STARTUP ──────────────────────────────────────────────────────────────
-# ─── STARTUP ──────────────────────────────────────────────────────────────
 print("[APP START] Entering startup block")
 try:
     with app.app_context():
@@ -443,20 +443,17 @@ try:
             db.session.commit()
             print("[STARTUP] Created default PalayanConfig")
 
-        # ─── Safer owner seeding ────────────────────────────────────────────
-        owner_email = os.environ.get('DEFAULT_OWNER_EMAIL', 'owner@farmlink.ph').strip().lower()
-
-        owner = User.query.filter_by(email=owner_email).first()
-
-        if not owner:
-            print("[STARTUP] No user found with owner email → creating default owner")
-            owner_fullname = os.environ.get('DEFAULT_OWNER_NAME', 'Initial Farm Owner')
+        # Seed initial owner if none exists
+        if not User.query.filter_by(role='owner').first():
+            print("[STARTUP] No owner account found → creating default owner")
+            owner_email    = os.environ.get('DEFAULT_OWNER_EMAIL',    'owner@farmlink.ph')
+            owner_fullname = os.environ.get('DEFAULT_OWNER_NAME',     'Initial Farm Owner')
             owner_password = os.environ.get('DEFAULT_OWNER_PASSWORD', 'BennyLantacon')
-            owner_code     = os.environ.get('DEFAULT_OWNER_CODE', 'FRMLNK-INIT-413')
+            owner_code     = os.environ.get('DEFAULT_OWNER_CODE',     'FRMLNK-INIT-413')
 
             hashed_pw = generate_password_hash(owner_password)
 
-            owner = User(
+            default_owner = User(
                 email         = owner_email,
                 fullname      = owner_fullname,
                 password_hash = hashed_pw,
@@ -465,15 +462,10 @@ try:
                 verified      = True,
                 created_at    = datetime.utcnow()
             )
-            db.session.add(owner)
+
+            db.session.add(default_owner)
             db.session.commit()
             print("[STARTUP] Default owner created successfully")
-
-        elif owner.role != 'owner':
-            print(f"[STARTUP] Owner email exists but role is '{owner.role}' → fixing to 'owner'")
-            owner.role = 'owner'
-            db.session.commit()
-            print("[STARTUP] Owner role fixed")
 
 except Exception as startup_err:
     print("[STARTUP CRASH] Failed during startup")
@@ -492,65 +484,67 @@ def login():
 
         email = data.get("email", "").strip().lower()
         password = data.get("password", "").strip()
-        access_code = data.get("access_code", "").strip()
+        admin_code = data.get("admincode", "").strip()
+
+        if user.role == "owner":
+            if not admin_code:
+                return jsonify({"ok": False, "error": "Access code required for owner login"}), 401
+            if user.access_code != admin_code:
+                return jsonify({"ok": False, "error": "Invalid access code"}), 401
 
         if not email or not password:
-            return jsonify({"ok": False, "error": "Email and password are required"}), 400
+            return jsonify({"ok": False, "error": "Email and password required"}), 400
 
-        # Find user (case-insensitive email)
         user = User.query.filter_by(email=email).first()
         if not user:
-            print(f"[LOGIN] User not found for email: {email}")
             return jsonify({"ok": False, "error": "Account not found"}), 404
-
-        # Debug: show what we found
-        print(f"[LOGIN] Found user ID={user.id}, email={user.email}, role={user.role}")
 
         # Password check
         if not check_password_hash(user.password_hash, password):
-            print(f"[LOGIN] Incorrect password for {email}")
             return jsonify({"ok": False, "error": "Incorrect password"}), 401
 
-        # Owner must provide access code
+        # Owner access-code requirement
         if user.role == "owner":
             if not access_code:
-                print(f"[LOGIN] Missing access code for owner: {email}")
-                return jsonify({"ok": False, "error": "Access code required for owner login"}), 401
+                return jsonify({
+                    "ok": False,
+                    "error": "Access code required for owner login"
+                }), 401
 
             if user.access_code != access_code:
-                print(f"[LOGIN] Invalid access code for owner: {email}")
-                return jsonify({"ok": False, "error": "Invalid access code"}), 401
+                return jsonify({
+                    "ok": False,
+                    "error": "Invalid access code"
+                }), 401
 
-        # Success: generate tokens
-        access_token = create_access_token(identity=user.email)
-        refresh_token = create_refresh_token(identity=user.email)
+        access = create_access_token(identity=user.email)
+        refresh = create_refresh_token(identity=user.email)
 
         add_log(
-            title="User Login",
-            message=f"{user.email} logged in successfully (role: {user.role})",
-            log_type="auth",
+            "User Login",
+            f"{user.email} logged in successfully",
+            "auth",
             user_email=user.email
         )
 
         return jsonify({
             "ok": True,
             "message": "Login successful",
-            "token": access_token,
-            "refresh_token": refresh_token,
+            "token": access,
+            "refresh_token": refresh,
             "user": {
                 "email": user.email,
                 "fullname": user.fullname,
                 "role": user.role,
-                "avatar": user.avatar_base64 or ""
+                "avatar": user.avatar_base64
             }
         }), 200
 
     except Exception as e:
-        print("[LOGIN ERROR]", str(e))
-        import traceback
-        traceback.print_exc()
+        print("[LOGIN ERROR]", e)
+        import traceback; traceback.print_exc()
         return jsonify({"ok": False, "error": "Server error during login"}), 500
-    
+
 @app.route("/api/data")
 @jwt_required(optional=True)
 def api_data():
@@ -714,79 +708,7 @@ def ingest_sensor_data():
         import traceback
         traceback.print_exc()
         return jsonify({"ok": False, "error": "Database error during ingest"}), 500
-    
-@app.route('/api/control', methods=['POST'])
-@jwt_required()
-def control_solenoid():
-    global pending_command
-    data = request.get_json()
-    action = data.get('action')  # Expect "open" or "close"
 
-    if not data or not action:
-        return jsonify({"ok": False, "error": "Missing 'action' field"}), 400
-
-    action = action.lower()
-    if action not in ['open', 'close']:
-        return jsonify({"ok": False, "error": "Action must be 'open' or 'close'"}), 400
-
-    # Optional: restrict to owners only
-    current_email = get_jwt_identity()
-    user = User.query.filter_by(email=current_email).first()
-    if not user or user.role != 'owner':
-        return jsonify({"ok": False, "error": "Only owners can control solenoid remotely"}), 403
-
-    pending_command = "OPEN" if action == "open" else "CLOSE"
-
-    add_log(
-        title="Remote Solenoid Command",
-        message=f"Solenoid {action.upper()} requested remotely by {current_email}",
-        log_type="irrigation",
-        user_email=current_email
-    )
-
-    return jsonify({
-        "ok": True,
-        "message": f"Command '{action.upper()}' queued – will be sent to device soon"
-    }), 200
-
-
-@app.route('/api/get-command', methods=['GET'])
-def get_command():
-    global pending_command
-    if pending_command:
-        cmd = pending_command
-        pending_command = None
-        return jsonify({"command": cmd, "status": "sent"})
-    return jsonify({"command": None, "status": "idle"})
-
-@app.route('/api/report', methods=['GET'])
-@jwt_required()
-def generate_report():
-    current_email = get_jwt_identity()
-    user = User.query.filter_by(email=current_email).first()
-    if not user or user.role != 'owner':
-        return jsonify({'ok': False, 'error': 'Owners only'}), 403
-
-    readings = SensorReading.query.order_by(SensorReading.timestamp.desc()).limit(1000).all()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['Timestamp', 'Moisture', 'Temperature', 'Humidity', 'Light'])
-
-    for r in readings:
-        writer.writerow([
-            r.timestamp.isoformat(),
-            r.moisture,
-            r.temperature,
-            r.humidity,
-            r.light
-        ])
-
-    response = make_response(output.getvalue())
-    response.headers["Content-Disposition"] = "attachment; filename=sensor_report.csv"
-    response.headers["Content-type"] = "text/csv"
-    return response
-    
 @app.route('/api/refresh', methods=['POST'])
 @jwt_required(refresh=True)
 def refresh():
@@ -806,7 +728,7 @@ def clear_alerts():
     current_user = User.query.filter_by(email=get_jwt_identity()).first()
     if not current_user or current_user.role != 'owner':
         return jsonify({'ok': False, 'error': 'Owners only'}), 403
-    
+
     Alert.query.delete()
     db.session.commit()
     return jsonify({'ok': True, 'message': 'All alerts cleared'})
@@ -879,32 +801,6 @@ def get_logs():
         "ok": True,
         "logs": logs_list
     })
-
-@app.route('/api/resend-owner-code', methods=['POST'])
-def resend_owner_code():
-    data = request.get_json()
-    email = data.get('email', '').strip().lower()
-
-    if not email:
-        return jsonify({"ok": False, "error": "Email required"}), 400
-
-    user = User.query.filter_by(email=email, role='owner').first()
-    if not user:
-        # Security: Don't reveal if exists
-        return jsonify({"ok": True, "message": "If an owner account, code sent."}), 200
-
-    # New code
-    new_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
-    user.access_code = new_code
-
-    try:
-        db.session.commit()
-        send_access_code_email(email, new_code)  # Your existing function
-        return jsonify({"ok": True, "message": "New code sent to email."}), 200
-    except Exception as e:
-        db.session.rollback()
-        print("[RESEND ERROR]", str(e))
-        return jsonify({"ok": False, "error": "Failed to send"}), 500
 
 @app.route('/api/settings', methods=['GET', 'POST'])
 @jwt_required()
@@ -990,14 +886,14 @@ def reconnect_lora():
     current_email = get_jwt_identity()
     global SERIAL_RECONNECT_REQUEST
     SERIAL_RECONNECT_REQUEST = True
-    
+
     add_log(
         title="LoRa Reconnect Requested",
         message="Owner triggered LoRa reconnect",
         log_type="connection",
         user_email=current_email
     )
-    
+
     return jsonify({'ok': True, 'message': 'Reconnect requested'})
 
 @app.route('/api/water', methods=['POST'])
@@ -1016,140 +912,102 @@ def manual_water():
         'message': f'Watering started for {duration} minutes'
     })
 
+# ─── Remote Valve Control ─────────────────────────────────────────────────
+pending_command = None  # Global queue for next command
+
+@app.route('/api/control', methods=['POST'])
+@jwt_required()
+def control_valve():
+    global pending_command
+    data = request.get_json()
+    action = data.get('action')
+
+    if not action:
+        return jsonify({"ok": False, "error": "Missing 'action' field"}), 400
+
+    action = action.lower()
+    if action not in ['open', 'close']:
+        return jsonify({"ok": False, "error": "Action must be 'open' or 'close'"}), 400
+
+    current_email = get_jwt_identity()
+    user = User.query.filter_by(email=current_email).first()
+    if not user:
+        return jsonify({"ok": False, "error": "User not found"}), 404
+
+    # Log who requested it (both roles allowed)
+    add_log(
+        title="Manual Valve Command",
+        message=f"Valve {action.upper()} requested by {current_email} ({user.role})",
+        log_type="irrigation",
+        user_email=current_email
+    )
+
+    pending_command = "OPEN" if action == "open" else "CLOSE"
+
+    return jsonify({
+        "ok": True,
+        "message": f"Valve {action.upper()} command queued"
+    }), 200
+
+
+@app.route('/api/get-command', methods=['GET'])
+def get_pending_command():
+    global pending_command
+    if pending_command:
+        cmd = pending_command
+        pending_command = None  # Consume the command
+        return jsonify({"command": cmd})
+    return jsonify({"command": None})
+
 # ─── AUTH ─────────────────────────────────────────────────────────────────
 
 @app.route('/api/register', methods=['POST'])
 def register():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'ok': False, 'error': 'Invalid JSON payload'}), 400
+
+    email       = data.get('email')
+    fullname    = data.get('fullname')
+    password    = data.get('password')
+    role        = data.get('role', 'sakada')
+    access_code = data.get('access_code')
+
+    if not all([email, fullname, password]):
+        return jsonify({'ok': False, 'error': 'Missing required fields'}), 400
+
+    if role not in ['sakada', 'owner']:
+        return jsonify({'ok': False, 'error': 'Invalid role'}), 400
+
+    if User.query.filter_by(email=email).first():
+        return jsonify({'ok': False, 'error': 'Email already registered'}), 409
+
+    hashed_pw = generate_password_hash(password)
+
+    new_user = User(
+        email=email,
+        fullname=fullname,
+        password_hash=hashed_pw,
+        role=role,
+        verified=False
+    )
+
+    sent_access_code = None
+    if role == 'owner':
+        sent_access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        new_user.access_code = sent_access_code
+        send_access_code_email(email, sent_access_code)
+
     try:
-        data = request.get_json(silent=True)
-        if not data:
-            return jsonify({'ok': False, "error": "Invalid or missing JSON payload"}), 400
-
-        email = data.get('email', '').strip().lower()
-        fullname = data.get('fullname', '').strip()
-        password = data.get('password', '').strip()
-        role = data.get('role', 'sakada').strip().lower()
-        access_code = data.get('access_code', '').strip()
-
-        # Validation
-        if not all([email, fullname, password]):
-            return jsonify({'ok': False, "error": "Email, full name, and password are required"}), 400
-
-        if role not in ['sakada', 'owner']:
-            return jsonify({'ok': False, "error": "Invalid role (must be 'sakada' or 'owner')"}), 400
-
-        if len(password) < 6:
-            return jsonify({'ok': False, "error": "Password must be at least 6 characters"}), 400
-
-        # Prevent duplicate email (unique constraint should already block, but double-check)
-        if User.query.filter_by(email=email).first():
-            return jsonify({'ok': False, "error": "Email already registered"}), 409
-
-        # Owner registration requires access code in payload (optional extra safety)
-        if role == 'owner' and not access_code:
-            return jsonify({'ok': False, "error": "Access code required for owner registration"}), 400
-
-        hashed_pw = generate_password_hash(password)
-
-        new_user = User(
-            email=email,
-            fullname=fullname,
-            password_hash=hashed_pw,
-            role=role,
-            verified=False,
-            access_code=access_code if role == 'owner' else None
-        )
-
-        sent_access_code = None
-        if role == 'owner':
-            # Generate and send new access code
-            sent_access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
-            new_user.access_code = sent_access_code
-            send_access_code_email(email, sent_access_code)
-
         db.session.add(new_user)
         db.session.commit()
-
-        message = 'Registered successfully as ' + role.capitalize()
+        message = 'Registered successfully'
         if role == 'owner' and sent_access_code:
-            message += f' — access code sent to {email}'
-
-        add_log(
-            title="User Registered",
-            message=f"New user: {email} as {role}",
-            log_type="auth"
-        )
-
-        return jsonify({
-            'ok': True,
-            'message': message,
-            'role': role
-        }), 201
-
-    except Exception as e:
+            message += ' — access code sent to email'
+        return jsonify({'ok': True, 'message': message, 'role': role}), 201
+    except:
         db.session.rollback()
-        print("[REGISTER ERROR]", str(e))
-        import traceback
-        traceback.print_exc()
-        return jsonify({'ok': False, "error": "Failed to create account"}), 500
-    
-@app.route('/api/forgot-password', methods=['POST'])
-def forgot_password():
-    data = request.get_json()
-    email = data.get('email', '').strip().lower()
-
-    if not email:
-        return jsonify({"ok": False, "error": "Email required"}), 400
-
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        # Don't reveal if email exists (security best practice)
-        return jsonify({
-            "ok": True,
-            "message": "If the email exists, a reset link has been sent."
-        }), 200
-
-    # Generate a simple reset token (in production use UUID + expiry)
-    reset_token = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
-    
-    # For simplicity: store in user table (add column if needed)
-    # But for quick fix: we'll just email it directly (not stored)
-    # In real app you should add reset_token + expiry to User model
-
-    try:
-        msg = Message(
-            subject="FarmLink Password Reset",
-            sender=('FarmLink', 'farmlinktech.ph@gmail.com'),
-            recipients=[email],
-            body=f"""
-Hello,
-
-You requested a password reset for your FarmLink account.
-
-Your reset token/code: {reset_token}
-
-Enter this code in the app to set a new password.
-This code is valid for 30 minutes.
-
-If you didn't request this, ignore this email.
-
-Best regards,
-FarmLink Team
-            """.strip()
-        )
-        mail.send(msg)
-        print(f"[RESET EMAIL] Sent to {email} with token {reset_token}")
-        
-        return jsonify({
-            "ok": True,
-            "message": "Reset instructions sent to your email."
-        }), 200
-
-    except Exception as e:
-        print("[FORGOT PASSWORD EMAIL ERROR]", str(e))
-        import traceback
-        traceback.print_exc()
-        return jsonify({"ok": False, "error": "Failed to send email"}), 500
+        return jsonify({'ok': False, 'error': 'Failed to create account'}), 500
 
 @app.route('/api/me', methods=['GET'])
 @jwt_required()
@@ -1166,6 +1024,236 @@ def get_current_user():
         "role": user.role,
         "avatar": user.avatar_base64
     })
+
+@app.route('/api/update_avatar', methods=['POST'])  # ← MUST have methods=['POST']
+@jwt_required()
+def update_avatar():
+    print("[DEBUG] UPDATE_AVATAR ROUTE REACHED! Method:", request.method)
+    print("[DEBUG] Headers:", dict(request.headers))
+    print("[DEBUG] JSON body:", request.get_json(silent=True))
+
+    current_email = get_jwt_identity()
+    user = User.query.filter_by(email=current_email).first()
+    
+    if not user:
+        return jsonify({"ok": False, "error": "User not found"}), 404
+
+    data = request.get_json(silent=True)
+    if not data or 'avatar' not in data:
+        return jsonify({"ok": False, "error": "Missing 'avatar' field (base64 data URL expected)"}), 400
+
+    avatar_base64 = data['avatar']
+
+    # Basic validation
+    if not isinstance(avatar_base64, str) or not avatar_base64.startswith('data:image/'):
+        return jsonify({"ok": False, "error": "Invalid image format - must be data:image/...;base64,..."}), 400
+
+    # Size limit (~1.2 MB base64 → ~900 KB binary)
+    if len(avatar_base64) > 1_200_000:
+        return jsonify({"ok": False, "error": "Image too large (max ~900KB after base64)"}), 400
+
+    try:
+        user.avatar_base64 = avatar_base64
+        db.session.commit()
+
+        add_log(
+            title="Avatar Updated",
+            message=f"User {user.email} updated their profile picture",
+            log_type="profile",
+            user_email=user.email
+        )
+
+        return jsonify({
+            "ok": True,
+            "message": "Avatar updated successfully",
+            "avatar": user.avatar_base64
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        print("[UPDATE_AVATAR ERROR]", str(e))
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": "Failed to save avatar"}), 500
+
+@app.route('/api/report', methods=['GET'])
+@jwt_required()
+def api_report():
+    current_email = get_jwt_identity()
+    current_user = User.query.filter_by(email=current_email).first()
+
+    if not current_user or current_user.role != 'owner':
+        return jsonify({'ok': False, 'error': 'Owners only'}), 403
+
+    # Read parameters
+    mode   = request.args.get('mode', 'full')           # full, daily, today
+    fmt    = request.args.get('format', 'csv').lower()  # csv or pdf
+    days   = request.args.get('days', default=30, type=int)
+    date_str = request.args.get('date')                  # YYYY-MM-DD for specific day
+
+    end_date = datetime.utcnow()
+    if date_str:
+        try:
+            start_date = datetime.strptime(date_str, '%Y-%m-%d')
+            end_date = start_date + timedelta(days=1)
+        except ValueError:
+            return jsonify({'ok': False, 'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+    else:
+        start_date = end_date - timedelta(days=days)
+
+    # Fetch data
+    readings = SensorReading.query.filter(
+        SensorReading.timestamp >= start_date,
+        SensorReading.timestamp <= end_date
+    ).order_by(SensorReading.timestamp.asc()).all()
+
+    events = IrrigationEvent.query.filter(
+        IrrigationEvent.start_time >= start_date,
+        IrrigationEvent.start_time <= end_date
+    ).order_by(IrrigationEvent.start_time.asc()).all()
+
+    alerts = Alert.query.filter(
+        Alert.timestamp >= start_date,
+        Alert.timestamp <= end_date
+    ).order_by(Alert.timestamp.asc()).all()
+
+    # ─── PDF with Chart ────────────────────────────────────────────────
+    if fmt == 'pdf':
+        try:
+            from reportlab.lib.pagesizes import letter
+            from reportlab.pdfgen import canvas
+            from io import BytesIO
+
+            buffer = BytesIO()
+            
+            # Turn off compression → fixes many "corrupted" viewer issues
+            from reportlab import rl_config
+            rl_config.pageCompression = 0
+
+            p = canvas.Canvas(buffer, pagesize=letter)
+            width, height = letter
+
+            # Header - make it obvious
+            p.setFont("Helvetica-Bold", 20)
+            p.drawString(100, height - 80, "FarmLink Sensor Report (Test)")
+            p.setFont("Helvetica", 14)
+            p.drawString(100, height - 120, f"Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+            p.drawString(100, height - 150, f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+            p.drawString(100, height - 180, f"Readings count: {len(readings)}")
+
+            # Add some dummy content to ensure structure
+            p.setFont("Helvetica", 12)
+            y = height - 220
+            p.drawString(100, y, "This is a test line to confirm PDF rendering.")
+            y -= 30
+            p.drawString(100, y, "If you see this, basic PDF generation works.")
+            y -= 60
+
+            if readings:
+                last = readings[-1]
+                p.drawString(100, y, f"Latest moisture: {last.moisture or 'N/A'}%")
+                y -= 25
+                p.drawString(100, y, f"Latest temperature: {last.temperature or 'N/A'}°C")
+            else:
+                p.drawString(100, y, "No sensor readings in this period.")
+
+            p.showPage()
+            p.save()
+
+            buffer.seek(0)
+            pdf_bytes = buffer.getvalue()
+            
+            # Debug: log size (check Render logs after you download!)
+            print(f"[PDF DEBUG] Generated size: {len(pdf_bytes)} bytes | First 10 bytes: {pdf_bytes[:10]}")
+
+            response = make_response(pdf_bytes)
+            response.headers['Content-Type'] = 'application/pdf'
+            response.headers['Content-Disposition'] = f'attachment; filename="farmlink_test_report_{datetime.utcnow().strftime("%Y%m%d")}.pdf"'
+            response.headers['Content-Length'] = str(len(pdf_bytes))
+            return response
+
+        except Exception as pdf_err:
+            import traceback
+            print("[PDF GENERATION ERROR]", str(pdf_err))
+            traceback.print_exc()
+            return jsonify({"ok": False, "error": f"PDF generation failed: {str(pdf_err)}"}), 500
+
+    else:
+        # ─── CSV Generation ────────────────────────────────────────
+        output = StringIO()
+        writer = csv.writer(output)
+
+        writer.writerow(['FarmLink Report'])
+        writer.writerow(['Period', start_date.strftime('%Y-%m-%d'), 'to', end_date.strftime('%Y-%m-%d')])
+        writer.writerow(['Generated', datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')])
+        writer.writerow([])
+
+        if mode == 'daily':
+            from collections import defaultdict
+            daily_data = defaultdict(lambda: {'moist': [], 'temp': [], 'hum': [], 'light': [], 'water_min': 0})
+
+            for r in readings:
+                day = r.timestamp.date()
+                if r.moisture is not None: daily_data[day]['moist'].append(r.moisture)
+                if r.temperature is not None: daily_data[day]['temp'].append(r.temperature)
+                if r.humidity is not None: daily_data[day]['hum'].append(r.humidity)
+                if r.light is not None: daily_data[day]['light'].append(r.light)
+
+            for e in events:
+                day = e.start_time.date()
+                daily_data[day]['water_min'] += e.duration_minutes
+
+            writer.writerow(['Daily Summary'])
+            writer.writerow(['Date', 'Avg Moisture (%)', 'Avg Temp (°C)', 'Avg Humidity (%)', 'Avg Light', 'Total Water (min)'])
+
+            for day in sorted(daily_data.keys()):
+                d = daily_data[day]
+                moist = round(sum(d['moist'])/len(d['moist']), 1) if d['moist'] else '-'
+                temp  = round(sum(d['temp'])/len(d['temp']), 1) if d['temp'] else '-'
+                hum   = round(sum(d['hum'])/len(d['hum']), 1) if d['hum'] else '-'
+                light = round(sum(d['light'])/len(d['light']), 0) if d['light'] else '-'
+                writer.writerow([day, moist, temp, hum, light, d['water_min']])
+
+        else:
+            # Full detailed
+            writer.writerow(['Detailed Sensor Readings'])
+            writer.writerow(['Timestamp', 'Moisture (%)', 'Temperature (°C)', 'Humidity (%)', 'Light'])
+            for r in readings:
+                writer.writerow([
+                    r.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                    r.moisture if r.moisture is not None else '',
+                    r.temperature if r.temperature is not None else '',
+                    r.humidity if r.humidity is not None else '',
+                    r.light if r.light is not None else ''
+                ])
+
+            writer.writerow([])
+            writer.writerow(['Irrigation Events'])
+            writer.writerow(['Start Time', 'Duration (min)', 'Triggered By'])
+            for e in events:
+                writer.writerow([
+                    e.start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    e.duration_minutes,
+                    e.triggered_by
+                ])
+
+            writer.writerow([])
+            writer.writerow(['Alerts'])
+            writer.writerow(['Timestamp', 'Title', 'Message', 'Severity'])
+            for a in alerts:
+                writer.writerow([
+                    a.timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+                    a.title,
+                    a.message,
+                    a.severity
+                ])
+
+        output.seek(0)
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'text/csv'
+        filename = f"farmlink_report_{mode}_{end_date.strftime('%Y%m%d')}.csv"
+        response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
