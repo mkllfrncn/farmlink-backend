@@ -1076,6 +1076,53 @@ def update_avatar():
         traceback.print_exc()
         return jsonify({"ok": False, "error": "Failed to save avatar"}), 500
 
+@app.route('/api/update_profile', methods=['POST'])
+@jwt_required()
+def update_profile():
+    print("[DEBUG] UPDATE_PROFILE ROUTE REACHED! Method:", request.method)  # ← For debugging
+    print("[DEBUG] Headers:", dict(request.headers))
+    print("[DEBUG] JSON:", request.get_json(silent=True))
+
+    current_email = get_jwt_identity()
+    user = User.query.filter_by(email=current_email).first()
+
+    if not user:
+        return jsonify({"ok": False, "error": "User not found"}), 404
+
+    data = request.get_json(silent=True)
+    if not data or 'fullname' not in data:
+        return jsonify({"ok": False, "error": "Missing 'fullname' field"}), 400
+
+    new_fullname = data['fullname'].strip()
+    if not new_fullname or len(new_fullname) < 2:
+        return jsonify({"ok": False, "error": "Full name too short or empty"}), 400
+
+    try:
+        old_fullname = user.fullname
+        user.fullname = new_fullname
+        db.session.commit()
+
+        # Log the change
+        add_log(
+            title="Profile Updated",
+            message=f"User {user.email} changed fullname from '{old_fullname}' to '{new_fullname}'",
+            log_type="profile",
+            user_email=user.email
+        )
+
+        return jsonify({
+            "ok": True,
+            "message": "Profile updated successfully",
+            "fullname": new_fullname
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        print("[UPDATE_PROFILE ERROR]", str(e))
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": "Failed to update profile"}), 500
+    
 @app.route('/api/report', methods=['GET'])
 @jwt_required()
 def api_report():
