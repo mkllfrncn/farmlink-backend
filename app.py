@@ -484,7 +484,8 @@ def login():
 
         email = data.get("email", "").strip().lower()
         password = data.get("password", "").strip()
-        admin_code = data.get("admincode", "").strip()
+        role = data.get("role", "sakada")
+        access_code = data.get("access_code", "").strip()  # ← Matches frontend: "access_code"
 
         if not email or not password:
             return jsonify({"ok": False, "error": "Email and password required"}), 400
@@ -493,17 +494,18 @@ def login():
         if not user:
             return jsonify({"ok": False, "error": "Account not found"}), 404
 
-        # Now user exists — safe to check role
-        if user.role == "owner":
-            if not admin_code:
-                return jsonify({"ok": False, "error": "Access code required for owner login"}), 401
-            if user.access_code != admin_code:
-                return jsonify({"ok": False, "error": "Invalid access code"}), 401
-
-        # Password check (common for all roles)
+        # Password check (common for all)
         if not check_password_hash(user.password_hash, password):
             return jsonify({"ok": False, "error": "Incorrect password"}), 401
 
+        # Owner-specific check
+        if user.role == "owner":
+            if not access_code:
+                return jsonify({"ok": False, "error": "Access code required for owner login"}), 401
+            if user.access_code != access_code:
+                return jsonify({"ok": False, "error": "Invalid access code"}), 401
+
+        # Success – generate tokens
         access = create_access_token(identity=user.email)
         refresh = create_refresh_token(identity=user.email)
 
