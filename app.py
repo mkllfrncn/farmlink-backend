@@ -486,12 +486,6 @@ def login():
         password = data.get("password", "").strip()
         admin_code = data.get("admincode", "").strip()
 
-        if user.role == "owner":
-            if not admin_code:
-                return jsonify({"ok": False, "error": "Access code required for owner login"}), 401
-            if user.access_code != admin_code:
-                return jsonify({"ok": False, "error": "Invalid access code"}), 401
-
         if not email or not password:
             return jsonify({"ok": False, "error": "Email and password required"}), 400
 
@@ -499,23 +493,16 @@ def login():
         if not user:
             return jsonify({"ok": False, "error": "Account not found"}), 404
 
-        # Password check
+        # Now user exists — safe to check role
+        if user.role == "owner":
+            if not admin_code:
+                return jsonify({"ok": False, "error": "Access code required for owner login"}), 401
+            if user.access_code != admin_code:
+                return jsonify({"ok": False, "error": "Invalid access code"}), 401
+
+        # Password check (common for all roles)
         if not check_password_hash(user.password_hash, password):
             return jsonify({"ok": False, "error": "Incorrect password"}), 401
-
-        # Owner access-code requirement
-        if user.role == "owner":
-            if not access_code:
-                return jsonify({
-                    "ok": False,
-                    "error": "Access code required for owner login"
-                }), 401
-
-            if user.access_code != access_code:
-                return jsonify({
-                    "ok": False,
-                    "error": "Invalid access code"
-                }), 401
 
         access = create_access_token(identity=user.email)
         refresh = create_refresh_token(identity=user.email)
@@ -542,7 +529,8 @@ def login():
 
     except Exception as e:
         print("[LOGIN ERROR]", e)
-        import traceback; traceback.print_exc()
+        import traceback
+        traceback.print_exc()
         return jsonify({"ok": False, "error": "Server error during login"}), 500
 
 @app.route("/api/data")
