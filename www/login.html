@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FarmLink - Login</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <!-- Font Awesome 6 for eye icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" 
+      integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A==" 
+      crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <style>
+        body {
+            background: #0f2e0f;
+            background-image:
+                radial-gradient(circle at 10% 20%, rgba(46, 125, 50, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 90% 80%, rgba(46, 125, 50, 0.12) 0%, transparent 50%);
+            background-size: 140px 140px;
+            color: #e8f5e8;
+        }
+
+        header.brand {
+            background: linear-gradient(135deg, #1b4d1b, #0d2e0d);
+            padding: 24px 16px;
+            font-size: 2.1rem;
+            letter-spacing: 1px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        header.brand::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 60 60"><path fill="%232e7d32" opacity="0.25" d="M30 10 L25 25 L10 30 L25 35 L30 50 L35 35 L50 30 L35 25 Z"/></svg>') repeat;
+            opacity: 0.07;
+            animation: float-slow 90s infinite linear;
+        }
+
+        @keyframes float-slow {
+            0% { transform: translate(0,0); }
+            100% { transform: translate(120px, 120px); }
+        }
+
+        .card {
+            background: rgba(255,255,255,0.94);
+            border-radius: 20px;
+            padding: 28px 24px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+            border: 1px solid #a5d6a7;
+            color: #1b5e20;
+        }
+
+        label {
+            display: block;
+            margin: 18px 0 6px;
+            font-weight: 500;
+            color: #1b5e20;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #81c784;
+            border-radius: 12px;
+            background: #f1f8e9;
+            font-size: 1rem;
+        }
+
+        select {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%232e7d32' d='M2 4l4 4 4-4z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 16px center;
+            background-size: 12px;
+            padding-right: 40px;
+        }
+
+        .admin-code-wrapper {
+            display: none;
+            transition: all 0.3s ease;
+        }
+
+        .hint {
+            font-size: 0.82rem;
+            color: #558b2f;
+            margin-top: 6px;
+        }
+
+        .btn-login {
+            margin-top: 24px;
+            background: linear-gradient(90deg, #2e7d32, #43a047);
+            color: white;
+            border: none;
+            padding: 16px;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            width: 100%;
+            cursor: pointer;
+        }
+
+        .btn-resend {
+            margin-top: 12px;
+            background: #1976d2;
+            color: white;
+            border: none;
+            padding: 12px;
+            border-radius: 12px;
+            font-size: 1rem;
+            width: 100%;
+            cursor: pointer;
+        }
+
+        .status-message {
+            margin-top: 8px;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+
+        .status-success { color: #2e7d32; }
+        .status-error   { color: #c62828; }
+
+        .links {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 0.95rem;
+        }
+
+        .links a {
+            color: #2e7d32;
+            text-decoration: none;
+            margin: 0 12px;
+        }
+
+        /* Password toggle styling */
+        .password-wrapper {
+            position: relative;
+        }
+
+        .password-wrapper input {
+            padding-right: 50px; /* Make space for the eye button */
+        }
+
+        .toggle-password {
+            position: absolute;
+            right: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            font-size: 1.3rem;
+            cursor: pointer;
+            color: #558b2f;
+            padding: 0 8px;
+            transition: color 0.2s ease;
+        }
+
+        .toggle-password:hover {
+            color: #2e7d32;
+        }
+
+        .toggle-password:focus {
+            outline: none;
+            color: #1b5e20;
+        }
+    </style>
+</head>
+<body>
+
+    <header class="brand">
+        <h1>FARMLINK</h1>
+    </header>
+
+    <div class="container">
+        <main class="card">
+            <h2 style="text-align:center; margin-bottom:28px; color:#1b5e20;">Login to Your Account</h2>
+
+            <label>Email:</label>
+            <input id="email" type="email" placeholder="Enter your email" autocomplete="email">
+
+            <label>Password:</label>
+            <div class="password-wrapper">
+                <input id="password" type="password" placeholder="Enter your password" autocomplete="current-password">
+                <button type="button" class="toggle-password" id="togglePassword">
+                    <i class="fas fa-eye"></i>
+                </button>
+            </div>
+
+            <div class="admin-code-wrapper" id="adminCodeWrapper">
+                <label>Admin Access Code:</label>
+                <input id="admincode" type="text" placeholder="e.g. FRMLNK26-1304">
+                <div class="hint">Format: FRMLNK##-#### (sent to your email)</div>
+
+                <!-- Resend Access Code -->
+                <button id="resendCodeBtn" class="btn-resend">Resend Access Code to Email</button>
+                <div id="resendStatus" class="status-message"></div>
+            </div>
+
+            <label>Login as:</label>
+            <select id="role" onchange="onRoleChange()">
+                <option value="sakada">Sakada</option>
+                <option value="owner">Owner</option>
+            </select>
+
+            <button id="login" class="btn-login">Login →</button>
+
+            <div class="links">
+                <a href="forgot-password.html">Forgot Password?</a> •
+                <a href="signup.html">Sign Up</a>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/config.js"></script>
+    <script src="js/auth.js"></script>
+
+    <!-- Password visibility toggle with Font Awesome icons -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const passwordInput = document.getElementById('password');
+            const toggleButton = document.getElementById('togglePassword');
+
+            if (passwordInput && toggleButton) {
+                toggleButton.addEventListener('click', () => {
+                    // Toggle between password and text
+                    const currentType = passwordInput.type;
+                    passwordInput.type = currentType === 'password' ? 'text' : 'password';
+
+                    // Update icon
+                    toggleButton.innerHTML = passwordInput.type === 'password'
+                        ? '<i class="fas fa-eye"></i>'
+                        : '<i class="fas fa-eye-slash"></i>';
+                });
+            }
+        });
+    </script>
+
+    <!-- Role change handler -->
+    <script>
+        function onRoleChange() {
+            const role = document.getElementById("role").value;
+            const adminWrapper = document.getElementById("adminCodeWrapper");
+            adminWrapper.style.display = role === "owner" ? "block" : "none";
+        }
+
+        // Run once on page load (in case Owner is pre-selected)
+        onRoleChange();
+    </script>
+
+    <!-- Resend access code logic (unchanged) -->
+    <script>
+        let lastResend = 0;
+
+        document.getElementById('resendCodeBtn')?.addEventListener('click', async () => {
+            const email = document.getElementById('email').value.trim();
+            const statusEl = document.getElementById('resendStatus');
+
+            if (Date.now() - lastResend < 45000) {
+                alert("Please wait 45 seconds before resending.");
+                return;
+            }
+            lastResend = Date.now();
+
+            if (!email || !email.includes('@')) {
+                statusEl.textContent = 'Please enter a valid email first.';
+                statusEl.className = 'status-message status-error';
+                return;
+            }
+
+            statusEl.textContent = 'Sending access code...';
+            statusEl.className = 'status-message';
+
+            try {
+                const res = await fetch(`${API_BASE}/api/resend-owner-code`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email })
+                });
+
+                const data = await res.json();
+
+                if (data.ok) {
+                    statusEl.textContent = data.message || 'Access code re-sent to your email!';
+                    statusEl.className = 'status-message status-success';
+                } else {
+                    statusEl.textContent = data.error || 'Failed to send code';
+                    statusEl.className = 'status-message status-error';
+                }
+
+            } catch (err) {
+                statusEl.textContent = 'Network error. Try again.';
+                statusEl.className = 'status-message status-error';
+                console.error('Resend error:', err);
+            }
+        });
+    </script>
+</body>
+</html>

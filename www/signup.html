@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FarmLink - Sign Up</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <style>
+        body {
+            background: #0f2e0f;
+            background-image:
+                radial-gradient(circle at 10% 20%, rgba(46, 125, 50, 0.15) 0%, transparent 50%),
+                radial-gradient(circle at 90% 80%, rgba(46, 125, 50, 0.12) 0%, transparent 50%);
+            background-size: 140px 140px;
+            color: #e8f5e8;
+        }
+
+        header.brand {
+            background: linear-gradient(135deg, #1b4d1b, #0d2e0d);
+            padding: 24px 16px;
+            font-size: 2.1rem;
+            letter-spacing: 1px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card {
+            background: rgba(255,255,255,0.94);
+            border-radius: 20px;
+            padding: 28px 24px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+            border: 1px solid #a5d6a7;
+            color: #1b5e20;
+        }
+
+        label {
+            display: block;
+            margin: 18px 0 6px;
+            font-weight: 500;
+            color: #1b5e20;
+        }
+
+        input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #81c784;
+            border-radius: 12px;
+            background: #f1f8e9;
+            font-size: 1rem;
+        }
+
+        .btn-register {
+            margin-top: 24px;
+            background: linear-gradient(90deg, #2e7d32, #43a047);
+            color: white;
+            border: none;
+            padding: 16px;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            width: 100%;
+            cursor: pointer;
+        }
+
+        .info-note {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 0.95rem;
+            color: #2e7d32;
+            line-height: 1.5;
+            padding: 12px;
+            background: rgba(46, 125, 50, 0.08);
+            border-radius: 12px;
+            border: 1px solid #a5d6a7;
+        }
+
+        .links {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 0.95rem;
+        }
+
+        .links a {
+            color: #2e7d32;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+
+    <header class="brand">
+        <h1>FARMLINK</h1>
+    </header>
+
+    <div class="container">
+        <main class="card">
+            <h2 style="text-align:center; margin-bottom:28px; color:#1b5e20;">Create Your Account</h2>
+
+            <label>Full Name:</label>
+            <input id="fullname" type="text" placeholder="Enter full name" autocomplete="name">
+
+            <label>Email:</label>
+            <input id="email" type="email" placeholder="Enter your email" autocomplete="email">
+
+            <label>Password:</label>
+            <input id="password" type="password" placeholder="Create a strong password" autocomplete="new-password">
+
+            <label>Confirm Password:</label>
+            <input id="confirm-password" type="password" placeholder="Confirm password" autocomplete="new-password">
+
+            <label>Register as:</label>
+            <select id="role">
+                <option value="sakada">Sakada (Worker)</option>
+                <option value="owner">Owner</option>
+            </select>
+
+            <button id="register" class="btn-register">Register →</button>
+
+            <div class="info-note">
+                All new accounts are automatically registered as <strong>Sakada</strong> (farm worker).<br>
+                Owner access requires a valid access code (sent to your email after registration).
+            </div>
+
+            <div class="links">
+                Already have an account? <a href="login.html">Login Here</a>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/config.js"></script>
+
+    <script>
+        document.getElementById('register').addEventListener('click', async () => {
+            console.log("Register button clicked");
+
+            // Safe access with null checks to prevent the error you saw
+            const fullnameEl = document.getElementById('fullname');
+            const emailEl    = document.getElementById('email');
+            const passEl     = document.getElementById('password');
+            const confirmEl  = document.getElementById('confirm-password');
+
+            if (!fullnameEl || !emailEl || !passEl || !confirmEl) {
+                console.error("One or more form fields are missing in HTML");
+                alert("Error: Form fields not found. Please check the page.");
+                return;
+            }
+
+            const fullname = fullnameEl.value.trim();
+            const email    = emailEl.value.trim();
+            const password = passEl.value;
+            const confirm  = confirmEl.value;
+
+            if (!fullname) return alert('Please enter your full name');
+            if (!email || !email.includes('@')) return alert('Please enter a valid email');
+            if (password.length < 6) return alert('Password must be at least 6 characters');
+            if (password !== confirm) return alert('Passwords do not match');
+
+            try {
+                const role = document.getElementById('role').value;
+                const payload = { fullname, email, password, role };
+
+                const res = await fetch(`${API_BASE}/api/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const j = await res.json();
+
+                if (j.ok) {
+                    alert('Account created successfully!\nYou are registered as Sakada.\nPlease log in.');
+                    location.href = 'login.html';
+                } else {
+                    alert('Signup failed: ' + (j.error || 'Unknown error'));
+                }
+            } catch (e) {
+                console.error("Registration error:", e);
+                alert('Error: ' + e.message + '\nCheck console for details');
+            }
+        });
+    </script>
+</body>
+</html>
