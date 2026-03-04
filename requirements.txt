@@ -9,6 +9,7 @@ flask-jwt-extended>=4.6.0
 psycopg2-binary>=2.9.9 
 resend>=2.0.0
 flask-migrate==4.1.0
+mysqlclient==2.2.4
 reportlab==4.4.10
 
 # Database & MySQL driver
