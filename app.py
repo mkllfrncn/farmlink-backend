@@ -146,6 +146,17 @@ class Log(db.Model):
     def __repr__(self):
         return f"<Log {self.title}>"
 
+# ─── PASSWORD RESET MODEL ── MUST BE HERE BEFORE ANY ROUTE USES IT ────────
+class PasswordResetToken(db.Model):
+    id         = db.Column(db.Integer, primary_key=True)
+    email      = db.Column(db.String(120), nullable=False, index=True)
+    token      = db.Column(db.String(100), unique=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    expires_at = db.Column(db.DateTime, nullable=False)
+
+    def is_valid(self):
+        return datetime.utcnow() < self.expires_at
+
 class PalayanConfig(db.Model):
     id                  = db.Column(db.Integer, primary_key=True)
     min_moisture        = db.Column(db.Float, default=40.0)
@@ -218,16 +229,6 @@ class SensorReading(db.Model):
     def __repr__(self):
         return f"<SensorReading {self.timestamp}>"
     
-    class PasswordResetToken(db.Model):
-        id = db.Column(db.Integer, primary_key=True)
-        email = db.Column(db.String(120), nullable=False, index=True)
-        token = db.Column(db.String(100), unique=True, nullable=False)
-        created_at = db.Column(db.DateTime, default=datetime.utcnow)
-        expires_at = db.Column(db.DateTime, nullable=False)
-
-        def is_valid(self):
-            return datetime.utcnow() < self.expires_at
-
 # ─── HELPERS ──────────────────────────────────────────────────────────────
 
 def add_log(title, message, log_type="info", user_email=None):
@@ -430,6 +431,26 @@ def serial_worker():
 if SERIAL_ENABLED:
     print("[MAIN] Starting Serial thread...")
     threading.Thread(target=serial_worker, daemon=True, name="SerialReader").start()
+
+    # ─── Force table creation with logging ─────────────────────────────────────
+with app.app_context():
+    try:
+        db.create_all()
+        print("[DB STARTUP] Successfully ran db.create_all() → tables should now exist")
+        
+        # Quick check if PasswordResetToken table exists
+        from sqlalchemy import inspect
+        inspector = inspect(db.engine)
+        tables = inspector.get_table_names()
+        if 'password_reset_token' in tables:
+            print("[DB STARTUP] Confirmed: password_reset_token table exists")
+        else:
+            print("[DB STARTUP] WARNING: password_reset_token table STILL MISSING after create_all!")
+            
+    except Exception as db_err:
+        print("[DB STARTUP CRASH] Failed to create tables!")
+        import traceback
+        print(traceback.format_exc())
 
 # ─── KEEP-ALIVE THREAD ────────────────────────────────────────────────────
 def keep_alive():
@@ -1028,62 +1049,50 @@ def get_current_user():
 
 @app.route('/api/forgot-password', methods=['POST'])
 def forgot_password():
-    data = request.get_json()
-    email = data.get('email', '').strip().lower()
-
-    if not email:
-        return jsonify({"ok": False, "error": "Email required"}), 400
-
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        # Still return success to prevent email enumeration
-        return jsonify({"ok": True, "message": "If the email exists, a reset link has been sent."}), 200
-
-    # Create token
-    token = secrets.token_urlsafe(32)
-    expires = datetime.utcnow() + timedelta(hours=2)
-
-    reset = PasswordResetToken(
-        email=email,
-        token=token,
-        expires_at=expires
-    )
-    db.session.add(reset)
-    db.session.commit()
-
-    # Build reset link (use your actual deployed frontend URL)
-    reset_url = f"https://your-frontend-domain.com/reset-password.html?token={token}&email={email}"
-
     try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+
+        if not email:
+            return jsonify({"ok": False, "error": "Email required"}), 400
+
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return jsonify({"ok": True, "message": "If the email exists, a reset link has been sent."}), 200
+
+        token = secrets.token_urlsafe(32)
+        expires = datetime.utcnow() + timedelta(hours=2)
+
+        reset = PasswordResetToken(
+            email=email,
+            token=token,
+            expires_at=expires
+        )
+        db.session.add(reset)
+        db.session.commit()
+
+        reset_url = f"https://farmlink-backend-rx5g.onrender.com/reset-password.html?token={token}&email={email}"
+
         msg = Message(
             subject="FarmLink Password Reset",
             sender=('FarmLink', 'farmlinktech.ph@gmail.com'),
             recipients=[email],
-            body=f"""
-Hello,
-
-You requested a password reset for your FarmLink account.
-
-Click this link to reset your password:
-{reset_url}
-
-This link will expire in 2 hours.
-
-If you didn't request this, please ignore this email.
-
-FarmLink Team
-            """.strip()
+            body=f"Reset link: {reset_url}\n\nExpires in 2 hours."
         )
         mail.send(msg)
-        print(f"[RESET EMAIL] Sent to {email} | token: {token}")
-        return jsonify({"ok": True, "message": "Reset link sent — check your inbox"}), 200
+
+        return jsonify({"ok": True, "message": "Reset link sent — check inbox"}), 200
 
     except Exception as e:
         db.session.rollback()
-        print("[RESET EMAIL FAILED]", str(e))
         import traceback
-        traceback.print_exc()
-        return jsonify({"ok": False, "error": "Failed to send email"}), 500
+        error_trace = traceback.format_exc()
+        print("[FORGOT-PASSWORD CRASH]", error_trace)   # ← this will appear in Render logs!
+        return jsonify({
+            "ok": False,
+            "error": "Internal server error – check logs",
+            "details": str(e)   # optional – remove in production
+        }), 500
 
 
 @app.route('/api/reset-password', methods=['POST'])
