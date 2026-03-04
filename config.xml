@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<widget id="com.farmlink.app"
+        version="2.0.0"
+        xmlns="http://www.w3.org/ns/widgets"
+        xmlns:cdv="http://cordova.apache.org/ns/1.0"
+        xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <name>FarmLink</name>
+    <description>Smart IoT Irrigation System • LoRa • Auto Watering</description>
+    <author email="farmlinktech.ph@gmail.com">FarmLink Team</author>
+
+    <icon src="playstore.png" />
+
+    <content src="index.html" />
+
+    <access origin="*" />
+    <allow-navigation href="*" />
+    <allow-intent href="http://*/*" />
+    <allow-intent href="https://*/*" />
+
+    <preference name="Orientation" value="portrait" />
+    <preference name="SplashScreenDelay" value="3000" />
+    <preference name="AndroidXEnabled" value="true" />
+
+    <!-- Added / updated for Play Store 2026 compliance -->
+    <preference name="android-minSdkVersion" value="24" />
+    <preference name="android-targetSdkVersion" value="35" />
+    <preference name="android-compileSdkVersion" value="35" />
+
+    <platform name="android">
+
+        <config-file target="AndroidManifest.xml" parent="/manifest">
+            <uses-permission android:name="android.permission.INTERNET" />
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+            <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+            <uses-permission android:name="android.permission.WAKE_LOCK" />
+            <!-- Optional: if you use location for farm/gps features -->
+            <!-- <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" /> -->
+            <!-- <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" /> -->
+        </config-file>
+
+        <allow-intent href="market:*" />
+
+    </platform>
+
+</widget>

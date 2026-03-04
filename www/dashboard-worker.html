@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>FarmLink - Sakada Dashboard</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Inline style to completely remove native dropdown arrow/button -->
+    <style>
+        select#sensorSelect,
+        .form-select#sensorSelect {
+            -webkit-appearance: none !important;
+            -moz-appearance: none !important;
+            appearance: none !important;
+            background-image: none !important;
+            padding-right: 12px !important;
+            background-color: #f8fff8 !important;
+            border: 2px solid #b2d8b2 !important;
+            border-radius: 12px !important;
+        }
+
+        select#sensorSelect::-ms-expand {
+            display: none;
+        }
+
+        /* Optional: very subtle custom arrow */
+        select#sensorSelect {
+            background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23666' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E") no-repeat right 10px center !important;
+            background-size: 10px !important;
+        }
+
+        .sensor-card {
+            background: linear-gradient(135deg, #e8f5e8, #d0f0d0);
+            border-radius: 16px;
+            padding: 20px 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+
+        .status-dot {
+            font-size: 1.2em;
+            margin: 0 4px;
+        }
+        .status-online  { color: #27ae60; }
+        .status-offline { color: #e74c3c; }
+    </style>
+</head>
+<body>
+    <header class="brand">
+        <h1>🌱 FARMLINK</h1>
+    </header>
+
+    <main class="container py-3">
+        <!-- Greeting -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>
+                <a href="profile.html" style="color:#155015; text-decoration:none; font-weight:600;">
+                    Hello, <span id="displayName">User</span>
+                </a>
+            </h2>
+            <span style="color:#27ae60; font-weight:500;">Role: Sakada</span>
+        </div>
+
+        <!-- Status -->
+        <div class="alert alert-info mb-3 d-flex align-items-center flex-wrap gap-3">
+            <span id="lora-status">LoRa: Connecting...</span>
+            <span> | </span>
+            MCU 1: <span id="mcu1-status" class="status-dot">🟢</span>
+            <span> | </span>
+            MCU 2: <span id="mcu2-status" class="status-dot">🟢</span>
+            <small id="current-time" class="ms-auto text-muted" style="font-size:0.85rem;"></small>
+        </div>
+
+        <!-- Quick Stats -->
+        <div class="row mb-4 g-3">
+            <div class="col-6">
+                <div class="sensor-card text-center">
+                    <big id="moistVal">--%</big><br>Moisture
+                </div>
+            </div>
+            <div class="col-6">
+                <div class="sensor-card text-center">
+                    <big id="tempVal">--°C</big><br>Temperature
+                </div>
+            </div>
+            <div class="col-6">
+                <div class="sensor-card text-center">
+                    <big id="humVal">--%</big><br>Humidity
+                </div>
+            </div>
+            <div class="col-6">
+                <div class="sensor-card text-center">
+                    <big id="lightVal">--</big><br>Light
+                </div>
+            </div>
+        </div>
+
+        <!-- Chart Section -->
+        <section class="card mb-4">
+            <div class="card-body">
+                <div class="mb-3">
+                    <label for="sensorSelect" class="form-label fw-bold">Select Parameter</label>
+                    <select id="sensorSelect" class="form-select">
+                        <option value="moisture">Moisture</option>
+                        <option value="temperature">Temperature</option>
+                        <option value="humidity">Humidity</option>
+                        <option value="light">Light</option>
+                    </select>
+                </div>
+                <h5 class="card-title mb-3">24-Hour Trend</h5>
+                <canvas id="chart" height="220" style="max-height:220px; width:100%;"></canvas>
+            </div>
+        </section>
+
+        <!-- Manual Valve Control -->
+        <section class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title mb-3">Manual Valve Control</h5>
+                
+                <div class="d-flex gap-3 mb-3">
+                    <button id="openValveBtn" class="btn btn-success w-50 py-3">
+                        <strong>OPEN VALVE</strong><br>
+                        <small>Start watering now</small>
+                    </button>
+                    <button id="closeValveBtn" class="btn btn-danger w-50 py-3">
+                        <strong>CLOSE VALVE</strong><br>
+                        <small>Stop watering now</small>
+                    </button>
+                </div>
+
+                <p class="text-center mb-2 fw-bold">
+                    Current Valve State: 
+                    <span id="solenoidState">Unknown</span>
+                    <span id="solenoidDot" class="ms-2 fs-4">⚪</span>
+                </p>
+                
+                <small class="text-muted d-block text-center">
+                    Last updated from sensors
+                </small>
+            </div>
+        </section>
+
+        <!-- Navigation – Only Alerts remains -->
+        <div class="row g-3 justify-content-center">
+            <div class="col-6 col-md-4">
+                <button class="btn btn-warning w-100 py-3" id="alerts-btn">
+                    <strong>🔔 Alerts</strong><br>
+                    <small>View important notifications</small>
+                </button>
+            </div>
+        </div>
+    </main>
+
+<script src="js/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="js/notifications.js"></script>    
+
+<script>
+    let chart = null;
+    let selectedSensor = 'moisture';
+
+    function updateValveUI(isOpen) {
+        const stateEl = document.getElementById('solenoidState');
+        const dotEl   = document.getElementById('solenoidDot');
+
+        if (!stateEl || !dotEl) return;
+
+        const text  = isOpen ? 'OPEN' : 'CLOSED';
+        const color = isOpen ? '#27ae60' : '#e74c3c';
+        const dot   = isOpen ? '🟢' : '🔴';
+
+        stateEl.textContent = text;
+        stateEl.style.color = color;
+        dotEl.innerHTML     = dot;
+    }
+
+    async function sendValveCommand(action) {
+        if (!confirm(`Are you sure you want to ${action.toUpperCase()} the valve?`)) return;
+
+        const token = getAuthToken();
+        if (!token) {
+            alert("Session expired. Please log in again.");
+            return;
+        }
+
+        try {
+            const res = await fetch(API_BASE + '/api/control', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ action: action.toLowerCase() })
+            });
+
+            const json = await res.json();
+
+            if (res.ok && json.ok) {
+                alert(`Command sent: Valve will ${action.toLowerCase()}`);
+                updateValveUI(action.toLowerCase() === 'open');
+            } else {
+                alert("Failed: " + (json.error || "Unknown error"));
+            }
+        } catch (err) {
+            alert("Network error: " + err.message);
+        }
+    }
+
+    function getAuthToken() {
+        return localStorage.getItem('token') || '';
+    }
+
+    // Chart functions (unchanged)
+    function destroyChart() {
+        if (chart) {
+            chart.destroy();
+            chart = null;
+        }
+    }
+
+    function createChart() {
+        const canvas = document.getElementById('chart');
+        if (!canvas) return;
+
+        destroyChart();
+
+        const ctx = canvas.getContext('2d');
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array(24).fill(''),
+                datasets: [{
+                    label: getSensorLabel(selectedSensor),
+                    data: Array(24).fill(0),
+                    borderColor: '#27ae60',
+                    backgroundColor: 'rgba(39, 174, 96, 0.12)',
+                    tension: 0.4,
+                    fill: true,
+                    pointRadius: 0,
+                    borderWidth: 2.5
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { display: false },
+                    y: {
+                        beginAtZero: true,
+                        max: getSensorMax(selectedSensor),
+                        ticks: { stepSize: getSensorStep(selectedSensor) }
+                    }
+                },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { mode: 'index', intersect: false }
+                },
+                interaction: {
+                    mode: 'nearest',
+                    axis: 'x',
+                    intersect: false
+                }
+            }
+        });
+    }
+
+    function getSensorLabel(sensor) {
+        const labels = {
+            moisture: 'Moisture (%)',
+            temperature: 'Temperature (°C)',
+            humidity: 'Humidity (%)',
+            light: 'Light (lux)'
+        };
+        return labels[sensor] || sensor;
+    }
+
+    function getSensorMax(sensor) {
+        if (sensor === 'temperature') return 50;
+        if (sensor === 'light') return 1000;
+        return 100;
+    }
+
+    function getSensorStep(sensor) {
+        if (sensor === 'temperature') return 5;
+        if (sensor === 'light') return 100;
+        return 20;
+    }
+
+    async function updateDashboard() {
+        try {
+            const token = getAuthToken();
+            const headers = {
+                'Accept': 'application/json',
+                'Authorization': token ? `Bearer ${token}` : ''
+            };
+
+            const [dataRes, statusRes] = await Promise.all([
+                fetch(API_BASE + '/api/data', { headers }),
+                fetch(API_BASE + '/api/status', { headers })
+            ]);
+
+            if (!dataRes.ok || !statusRes.ok) {
+                throw new Error(`Status ${dataRes.status || statusRes.status}`);
+            }
+
+            const d = await dataRes.json();
+            const status = await statusRes.json();
+            const zone = d.zoneA || {};
+
+            if (zone && typeof zone.solenoid_open !== 'undefined') {
+                updateValveUI(zone.solenoid_open);
+            }
+
+            document.getElementById('moistVal').textContent = (zone.moisture ?? '--') + '%';
+            document.getElementById('tempVal').textContent  = (zone.temperature ?? '--') + '°C';
+            document.getElementById('humVal').textContent   = (zone.humidity ?? '--') + '%';
+            document.getElementById('lightVal').textContent = zone.light ?? '--';
+
+            const loraEl = document.getElementById('lora-status');
+            if (loraEl) {
+                loraEl.textContent = `LoRa: ${status.lora ? 'Connected' : 'Disconnected'}`;
+                loraEl.style.color = status.lora ? '#27ae60' : '#e74c3c';
+            }
+
+            ['mcu1', 'mcu2'].forEach(id => {
+                const el = document.getElementById(`${id}-status`);
+                if (el) {
+                    const online = status[id] === true;
+                    el.innerHTML = online ? '🟢 Online' : '🔴 Offline';
+                    el.className = online ? 'status-dot status-online' : 'status-dot status-offline';
+                }
+            });
+
+            const now = new Date();
+            document.getElementById('current-time').textContent = now.toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+
+            if (chart && zone[selectedSensor] !== undefined) {
+                chart.data.datasets[0].data.push(zone[selectedSensor]);
+                if (chart.data.datasets[0].data.length > 24) {
+                    chart.data.datasets[0].data.shift();
+                }
+                chart.update('none');
+            }
+
+        } catch (err) {
+            console.error("Dashboard update failed:", err);
+            const loraEl = document.getElementById('lora-status');
+            if (loraEl) {
+                loraEl.textContent = 'Connection error';
+                loraEl.style.color = '#e74c3c';
+            }
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('openValveBtn')?.addEventListener('click', () => sendValveCommand('open'));
+        document.getElementById('closeValveBtn')?.addEventListener('click', () => sendValveCommand('close'));
+
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        if (!user.email) {
+            window.location.href = 'login.html';
+            return;
+        }
+        document.getElementById('displayName').textContent = user.fullname || 'Sakada';
+
+        // Only Alerts navigation remains
+        document.getElementById('alerts-btn')?.addEventListener('click', () => {
+            window.location.href = 'alerts.html';
+        });
+
+        document.getElementById('sensorSelect')?.addEventListener('change', (e) => {
+            selectedSensor = e.target.value;
+            destroyChart();
+            createChart();
+        });
+
+        // Initialize
+        createChart();
+        updateDashboard();
+        setInterval(updateDashboard, 1500);
+    });
+</script>
+</body>
+</html>

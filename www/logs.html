@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>FarmLink - Logs</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: linear-gradient(135deg, #f5f9f5 0%, #e8f5e8 100%); color: #1b5e20; }
+        header.brand { background: #155015; color: white; padding: 16px; text-align: center; font-size: 1.8rem; font-weight: 600; }
+        .logs-container { max-width: 640px; margin: 24px auto; padding: 0 16px; }
+        .logs-title { text-align: center; font-size: 1.5rem; font-weight: 600; color: #155015; margin-bottom: 20px; }
+        .log-card { 
+            background: white; 
+            border-radius: 12px; 
+            padding: 16px 20px; 
+            margin-bottom: 16px; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08); 
+            border-left: 5px solid #27ae60; 
+        }
+        .log-title { font-weight: 600; color: #155015; margin-bottom: 6px; font-size: 1.1rem; display: flex; align-items: center; gap: 8px; }
+        .log-detail { font-size: 0.95rem; color: #444; line-height: 1.5; }
+        .timestamp { font-size: 0.85rem; color: #777; margin-top: 8px; }
+        .nav-tabs .nav-link { color: #155015; }
+        .nav-tabs .nav-link.active { background: #27ae60; color: white; border-color: #27ae60; }
+        .empty-state { text-align: center; color: #777; padding: 40px 0; font-size: 1.1rem; }
+        .btn-refresh { background: #27ae60; border: none; color: white; font-weight: 500; }
+    </style>
+</head>
+<body>
+
+    <header class="brand">
+        <span>🌱</span> FARMLINK
+    </header>
+
+    <div class="logs-container">
+        <h3 class="logs-title">Logs</h3>
+
+        <!-- Tabs -->
+        <ul class="nav nav-tabs mb-4 justify-content-center flex-wrap" id="logTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="all-tab" data-bs-toggle="tab" data-bs-target="#all" type="button" role="tab">All</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="login-tab" data-bs-toggle="tab" data-bs-target="#login" type="button" role="tab">Login / Auth</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="irrigation-tab" data-bs-toggle="tab" data-bs-target="#irrigation" type="button" role="tab">Irrigation</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button" role="tab">Settings</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="connection-tab" data-bs-toggle="tab" data-bs-target="#connection" type="button" role="tab">Connection</button>
+            </li>
+        </ul>
+
+        <!-- Tab content -->
+        <div class="tab-content" id="logTabContent">
+            <div class="tab-pane fade show active" id="all" role="tabpanel"></div>
+            <div class="tab-pane fade" id="login" role="tabpanel"></div>
+            <div class="tab-pane fade" id="irrigation" role="tabpanel"></div>
+            <div class="tab-pane fade" id="settings" role="tabpanel"></div>
+            <div class="tab-pane fade" id="connection" role="tabpanel"></div>
+        </div>
+
+        <div class="d-flex justify-content-between mt-5 gap-3">
+            <button class="btn btn-refresh w-50" onclick="loadLogs()">
+                Refresh ↻
+            </button>
+            <button id="backDashboard" class="btn btn-success w-50">
+                ← Back to Dashboard
+            </button>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="js/config.js"></script>
+
+    <script>
+        let allLogs = []; // store once, then filter locally
+
+        function renderLogs(containerId, filteredLogs) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+
+            if (filteredLogs.length === 0) {
+                container.innerHTML = '<div class="empty-state">No logs in this category.</div>';
+                return;
+            }
+
+            filteredLogs.forEach(log => {
+                const card = document.createElement('div');
+                card.className = 'log-card';
+
+                let icon = '✔';
+                let color = '#27ae60';
+                if (log.type === 'irrigation') { icon = '💧'; color = '#0dcaf0'; }
+                if (log.type === 'settings')   { icon = '⚙️'; color = '#fd7e14'; }
+                if (log.type === 'connection') { icon = '📡'; color = '#6c757d'; }
+                if (log.type === 'auth')       { icon = '🔑'; color = '#6610f2'; }
+
+                card.innerHTML = `
+                    <div class="log-title" style="border-left: 4px solid ${color}; padding-left: 8px;">
+                        <span>${icon}</span>
+                        ${log.title}
+                    </div>
+                    <div class="log-detail">${log.message}</div>
+                    <div class="timestamp">Logged: ${log.timestamp}</div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        async function loadLogs() {
+            const tabs = ['all', 'login', 'irrigation', 'settings', 'connection'];
+
+            // Show loading in all tabs
+            tabs.forEach(tab => {
+                document.getElementById(tab).innerHTML = '<div class="text-center p-4"><div class="spinner-border text-success" role="status"></div><p>Loading...</p></div>';
+            });
+
+            try {
+                const token = localStorage.getItem('token') || '';
+                const res = await fetch(`${API_BASE}/api/logs`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+                const data = await res.json();
+
+                if (!data.ok) {
+                    tabs.forEach(tab => {
+                        document.getElementById(tab).innerHTML = `<div class="alert alert-danger">${data.error || 'Failed to load logs'}</div>`;
+                    });
+                    return;
+                }
+
+                allLogs = data.logs || [];
+
+                if (allLogs.length === 0) {
+                    tabs.forEach(tab => {
+                        document.getElementById(tab).innerHTML = '<div class="empty-state">No logs yet.</div>';
+                    });
+                    return;
+                }
+
+                // Categorize logs
+                const categories = {
+                    all: allLogs,
+                    login: allLogs.filter(log => log.type === 'auth'),
+                    irrigation: allLogs.filter(log => log.type === 'irrigation'),
+                    settings: allLogs.filter(log => log.type === 'settings'),
+                    connection: allLogs.filter(log => log.type === 'connection')
+                };
+
+                // Render each tab
+                Object.keys(categories).forEach(key => {
+                    renderLogs(key, categories[key]);
+                });
+
+            } catch (err) {
+                tabs.forEach(tab => {
+                    document.getElementById(tab).innerHTML = `<div class="alert alert-danger">Error: ${err.message}</div>`;
+                });
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const user = JSON.parse(localStorage.getItem('user') || '{}');
+            if (user.role?.toLowerCase() !== 'owner') {
+                alert("Only Owners can access Logs.");
+                history.back();
+                return;
+            }
+
+            document.getElementById('backDashboard')?.addEventListener('click', () => {
+                const role = (user.role || '').toLowerCase().trim();
+                window.location.href = role === 'owner' ? 'dashboard-owner.html' : 'dashboard-worker.html';
+            });
+
+            loadLogs();
+
+            // Optional: auto-refresh every 60 seconds
+            // setInterval(loadLogs, 60000);
+        });
+    </script>
+</body>
+</html>

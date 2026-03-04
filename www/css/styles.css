@@ -1,0 +1,232 @@
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap");
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: "Poppins", sans-serif;
+    background: linear-gradient(135deg, #f0f8f0, #e8f5e8);
+    color: #0a3d0a;
+    min-height: 100vh;
+}
+
+header.brand {
+    background: linear-gradient(135deg, #1a5f1a, #0d3d0d);
+    color: white;
+    padding: 20px;
+    text-align: center;
+    font-size: 28px;
+    font-weight: 700;
+    position: relative;
+    overflow: hidden;
+}
+
+header.brand::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: url("../assets/img/plants.png") repeat;
+    opacity: 0.1;
+    animation: float 40s infinite linear;
+}
+
+@keyframes float {
+    0% {
+        transform: translate(0, 0);
+    }
+    100% {
+        transform: translate(100px, 100px);
+    }
+}
+
+.container {
+    padding: 20px;
+    max-width: 600px;
+    margin: auto;
+}
+
+.card {
+    background: white;
+    border-radius: 20px;
+    padding: 24px;
+    margin: 16px 0;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+    border: 1px solid #d0e8d0;
+}
+
+/* ────────────────────────────────────────────────
+   Remove native dropdown arrow/button completely
+───────────────────────────────────────────────── */
+#sensorSelect,
+.form-select#sensorSelect,
+select#sensorSelect {
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    appearance: none !important;
+    background-image: none !important;
+    padding-right: 12px !important;
+    background-color: #f8fff8 !important;
+    border: 2px solid #b2d8b2 !important;
+    border-radius: 12px !important;
+    font-size: 16px;
+    height: 48px;
+    line-height: 1.5;
+}
+
+/* Hide IE/Edge arrow */
+#sensorSelect::-ms-expand {
+    display: none;
+}
+
+/* Optional: tiny custom arrow (comment out the next 4 lines if you want ZERO visual hint of dropdown) */
+#sensorSelect {
+    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23666' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E") no-repeat right 12px center !important;
+    background-size: 10px !important;
+}
+
+/* Chart container stability */
+#chart {
+    max-height: 220px !important;
+    width: 100% !important;
+    display: block !important;
+}
+
+/* Quick stats cards */
+.sensor-card {
+    background: linear-gradient(135deg, #e8f5e8, #d0f0d0);
+    border-radius: 16px;
+    padding: 20px 10px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    min-height: 110px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+/* Status dots */
+.status-dot {
+    font-size: 1.3em;
+    margin: 0 5px;
+}
+.status-online  { color: #27ae60; }
+.status-offline { color: #e74c3c; }
+
+input,
+select {
+    width: 100%;
+    padding: 16px;
+    margin: 8px 0;
+    border-radius: 16px;
+    border: 2px solid #b2d8b2;
+    background: #f8fff8;
+    font-size: 16px;
+}
+
+.btn-gold {
+    background: linear-gradient(45deg, #d4af37, #f1c40f);
+    color: #0a3d0a;
+    border: none;
+    padding: 16px;
+    border-radius: 16px;
+    font-weight: 600;
+    width: 100%;
+    margin: 8px 0;
+    box-shadow: 0 6px 20px rgba(212, 175, 55, 0.4);
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.btn-gold:hover {
+    transform: translateY(-2px);
+}
+
+.btn-green {
+    background: #27ae60;
+    color: white;
+}
+
+.btn-red {
+    background: #c0392b;
+    color: white;
+}
+
+.sensor-card {
+    background: linear-gradient(135deg, #e8f5e8, #d0f0d0);
+    border-radius: 18px;
+    padding: 18px;
+    margin: 10px 0;
+    text-align: center;
+    font-weight: 600;
+}
+
+.sensor-card big {
+    font-size: 48px;
+    color: #1a5f1a;
+    display: block;
+}
+
+.alert-item {
+    background: #fff0f0;
+    border-left: 6px solid #e74c3c;
+    padding: 16px;
+    border-radius: 12px;
+    margin: 10px 0;
+}
+
+.avatar {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: #d0e8d0;
+    margin: 20px auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 50px;
+}
+
+.form-select {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    background-image: none !important;
+    padding: 12px 16px !important;
+    padding-right: 32px !important;
+    border: 2px solid #b2d8b2 !important;
+    border-radius: 12px !important;
+    background-color: #f8fff8 !important;
+    font-size: 16px;
+}
+
+.form-select::-ms-expand {
+    display: none;
+}
+
+/* Optional: custom arrow if you want one */
+.form-select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2327ae60' d='M2 4l4 4 4-4z'/%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: right 12px center !important;
+    background-size: 12px !important;
+}
+
+h2,
+h3,
+h4 {
+    color: #155015;
+    margin-bottom: 15px;
+}
+
+@media (max-width: 576px) {
+    .container {
+        padding: 10px;
+    }
+
+    .card {
+        padding: 16px;
+    }
+}

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>FarmLink - Settings</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background: linear-gradient(135deg, #f5f9f5 0%, #e8f5e8 100%); color: #1b5e20; }
+        header.brand { background: #155015; color: white; padding: 16px; text-align: center; font-size: 1.8rem; font-weight: 600; }
+        .settings-container { max-width: 540px; margin: 20px auto; padding: 0 16px; }
+        .section-title { font-size: 1.3rem; font-weight: 600; color: #155015; margin: 20px 0 10px; border-bottom: 2px solid #27ae60; padding-bottom: 6px; }
+        .form-label { font-weight: 500; color: #155015; }
+        .read-only-label { color: #e67e22; font-weight: 600; margin-bottom: 12px; text-align: center; }
+        .status-green { color: #27ae60; font-weight: bold; }
+        .status-red   { color: #e74c3c; font-weight: bold; }
+        .btn-save { background: linear-gradient(90deg, #2e7d32, #43a047); border: none; color: white; width: 100%; padding: 14px; font-size: 1.1rem; font-weight: 600; }
+    </style>
+</head>
+<body>
+
+    <header class="brand">
+        🌱 FARMLINK
+    </header>
+
+    <div class="settings-container">
+        <div class="text-center mb-4">
+            <h4>Settings</h4>
+            <span id="loggedAs" style="font-weight:500;">Logged in as: Loading...</span>
+            <div id="readOnlyLabel" class="read-only-label" style="display:none;">Read-Only Access (Sakada)</div>
+        </div>
+
+        <div id="loadingSpinner" class="spinner-border text-success d-block mx-auto mb-4" role="status" style="display:none;">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+
+        <div id="settingsForm">
+            <!-- Device Status -->
+            <div class="section-title">Device Status</div>
+            <div class="mb-4">
+                <button id="reconnectLora" class="btn btn-warning w-100 mb-2">Reconnect LoRa ↻</button>
+                <p class="text-muted small">Device ID: FMLNK-2025-01</p>
+            </div>
+
+            <!-- Moisture Thresholds -->
+            <div class="section-title">Moisture Threshold Settings</div>
+            <div class="row g-3 mb-4">
+                <div class="col-6">
+                    <label class="form-label">Zone A Min</label>
+                    <input type="number" id="zoneA_min" class="form-control" min="0" max="100">
+                </div>
+                <div class="col-6">
+                    <label class="form-label">Zone A Max</label>
+                    <input type="number" id="zoneA_max" class="form-control" min="0" max="100">
+                </div>
+            </div>
+
+            <!-- Irrigation Timer -->
+            <div class="section-title">Irrigation Timer Settings</div>
+            <div class="mb-4">
+                <label class="form-label">Auto Watering Time</label>
+                <input type="time" id="autoWaterTime" class="form-control mb-2">
+                <label class="form-label">Duration (minutes)</label>
+                <input type="number" id="duration" class="form-control" min="1" max="60">
+            </div>
+
+            <!-- Climate Thresholds -->
+            <div class="section-title">Climate Thresholds (Alerts)</div>
+            <div class="mb-4">
+                <label class="form-label">Max Temperature</label>
+                <input type="number" id="maxTemp" class="form-control mb-2" min="0" max="50"> °C
+                <label class="form-label">Min Humidity</label>
+                <input type="number" id="minHumidity" class="form-control" min="0" max="100"> %
+            </div>
+
+            <!-- Save -->
+            <button id="saveChanges" class="btn btn-save mb-4">Save Changes</button>
+
+            <!-- Back to Dashboard -->
+            <button id="backDashboard" class="btn btn-success w-100 py-3">
+                <strong>← Back to Dashboard</strong>
+            </button>
+        </div>
+    </div>
+
+    <script src="js/config.js"></script>
+    <script src="js/notifications.js"></script>
+    <script src="js/settings.js"></script>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const user = JSON.parse(localStorage.getItem('user') || '{}');
+            if (!user.email) {
+                location.href = 'login.html';
+                return;
+            }
+
+            const isOwner = (user.role || '').toLowerCase() === 'owner';
+            document.getElementById('loggedAs').innerHTML = `Logged in as: <b>${isOwner ? 'Owner' : 'Sakada'}</b>`;
+            if (!isOwner) document.getElementById('readOnlyLabel').style.display = 'block';
+
+            // Back button – smart redirect
+            document.getElementById('backDashboard')?.addEventListener('click', () => {
+                window.location.href = isOwner ? 'dashboard-owner.html' : 'dashboard-worker.html';
+            });
+
+            loadSettings(); // from settings.js
+        });
+    </script>
+</body>
+</html>

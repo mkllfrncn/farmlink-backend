@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FarmLink - Owner Dashboard</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <header class="brand">
+        <h1>🌱 FARMLINK</h1>
+    </header>
+
+    <main class="container py-3">
+        <!-- Greeting & Role -->
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>
+                <a href="profile.html" style="color:#155015; text-decoration:none; font-weight:600;">
+                    Hello, <span id="displayName">Loading...</span>
+                </a>
+            </h2>
+            <span style="color: #27ae60; font-weight:500;">Role: Owner</span>
+        </div>
+
+        <!-- Connection Status -->
+        <div class="alert alert-info mb-3 d-flex align-items-center flex-wrap gap-3">
+            <span id="lora-status">LoRa: Connecting...</span>
+            <span> | </span>
+            MCU 1: <span id="mcu1-status" class="status-dot">🟢</span>
+            <!-- MCU 2: <span id="mcu2-status" class="status-dot">🟢</span> -->
+            <small id="current-time" class="ms-auto text-muted" style="font-size:0.85rem;"></small>
+        </div>
+
+        <!-- Sensor Cards -->
+        <div class="row text-center mb-4 g-3">
+            <div class="col-6">
+                <div class="sensor-card">
+                    <big id="moistA">--%</big>
+                    <div>Moisture</div>
+                </div>
+            </div>
+            <div class="col-6">
+                <div class="sensor-card">
+                    <big id="tempA">--°C</big>
+                    <div>Temperature</div>
+                </div>
+            </div>
+            <div class="col-6">
+                <div class="sensor-card">
+                    <big id="humA">--%</big>
+                    <div>Humidity</div>
+                </div>
+            </div>
+            <div class="col-6">
+                <div class="sensor-card">
+                    <big id="lightA">--</big>
+                    <div>Light</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chart Section -->
+        <section class="card mb-4">
+            <div class="card-body">
+                <div class="d-flex flex-column gap-3 mb-3">
+                    <div>
+                        <label for="sensorSelect" class="form-label fw-bold">Select Sensor</label>
+                        <select id="sensorSelect" class="form-select">
+                            <option value="moisture">Moisture</option>
+                            <option value="humidity">Humidity</option>
+                            <option value="temperature">Temperature</option>
+                            <option value="light">Light</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="timeRangeSelect" class="form-label fw-bold">Time Range</label>
+                        <select id="timeRangeSelect" class="form-select">
+                            <option value="today">Today (24h)</option>
+                            <option value="7days" selected>7 Days</option>
+                            <option value="30days">30 Days</option>
+                        </select>
+                    </div>
+                </div>
+                <canvas id="chart" height="220" style="max-height:220px; width:100%;"></canvas>
+            </div>
+        </section>
+
+        <!-- Manual Valve Control -->
+        <section class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title mb-3">Manual Valve Control</h5>
+                
+                <div class="d-flex gap-3 mb-3">
+                    <button id="openValveBtn" class="btn btn-success w-50 py-3">
+                        <strong>OPEN VALVE</strong><br>
+                        <small>Start watering now</small>
+                    </button>
+                    <button id="closeValveBtn" class="btn btn-danger w-50 py-3">
+                        <strong>CLOSE VALVE</strong><br>
+                        <small>Stop watering now</small>
+                    </button>
+                </div>
+
+                <p class="text-center mb-2 fw-bold">
+                    Current Valve State: 
+                    <span id="solenoidState">Unknown</span>
+                    <span id="solenoidDot" class="ms-2 fs-4">⚪</span>
+                </p>
+                
+                <small class="text-muted d-block text-center">
+                    Last updated from sensors
+                </small>
+            </div>
+        </section>
+
+        <!-- Navigation Buttons -->
+        <div class="row g-3">
+            <div class="col-6">
+                <button id="settings" class="btn btn-success w-100 mb-2">⚙️ Settings</button>
+            </div>
+            <div class="col-6">
+                <button id="alerts" class="btn btn-warning w-100 mb-2">🔔 Alerts</button>
+            </div>
+            <div class="col-6">
+                <button id="logs" class="btn btn-primary w-100 mb-2">📋 Logs</button>
+            </div>
+            <div class="col-6">
+                <button id="download" class="btn btn-secondary w-100 mb-2" 
+                        onclick="location.href='report-download.html'">
+                    📥 Download Report
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- Scripts -->
+    <script src="js/config.js"></script>
+    <script src="js/notifications.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="js/dashboard.js"></script>
+    <script src="js/valve-control.js"></script>
+
+    <!-- Inline dashboard logic -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const user = JSON.parse(localStorage.getItem('user') || '{}');
+           
+            if (user.role?.toLowerCase() !== 'owner') {
+                alert('Access denied - Owner only');
+                location.href = 'login.html';
+                return;
+            }
+
+            document.getElementById('displayName').textContent = user.fullname || 'Owner';
+
+            // Navigation
+            document.getElementById('settings')?.addEventListener('click', () => location.href = 'settings.html');
+            document.getElementById('alerts')?.addEventListener('click', () => location.href = 'alerts.html');
+            document.getElementById('logs')?.addEventListener('click', () => location.href = 'logs.html');
+
+            // Improved Download Report
+            document.getElementById('downloadReport')?.addEventListener('click', async () => {
+                const btn = document.getElementById('downloadReport');
+                const textEl = document.getElementById('downloadText');
+                const spinner = document.getElementById('downloadSpinner');
+
+                textEl.textContent = 'Downloading...';
+                spinner.classList.remove('d-none');
+                btn.disabled = true;
+
+                try {
+                    const token = localStorage.getItem('token') || '';
+                    if (!token) throw new Error("Session expired. Please log in again.");
+
+                    // You can change this to '?mode=daily' or '?date=2026-03-02' later
+                    // For now: default full last 30 days
+                    const url = API_BASE + '/api/report?mode=full';   // or '?mode=daily' for daily summary
+
+                    const res = await fetch(url, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+
+                    if (!res.ok) {
+                        let errorMsg = `Error ${res.status}`;
+                        try {
+                            const json = await res.json();
+                            errorMsg = json.error || errorMsg;
+                        } catch {}
+                        throw new Error(errorMsg);
+                    }
+
+                    let filename = 'farmlink_report.csv';
+                    const disposition = res.headers.get('Content-Disposition');
+                    if (disposition && disposition.includes('filename=')) {
+                        filename = disposition.split('filename=')[1].replace(/"/g, '').trim();
+                    }
+
+                    const blob = await res.blob();
+                    const urlBlob = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = urlBlob;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(urlBlob);
+
+                } catch (err) {
+                    console.error(err);
+                    alert("Failed to download report:\n" + err.message);
+                } finally {
+                    textEl.textContent = '📥 Download Report';
+                    spinner.classList.add('d-none');
+                    btn.disabled = false;
+                }
+            });
+        });
+    </script>
+</body>
+</html>
