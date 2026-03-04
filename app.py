@@ -585,6 +585,48 @@ def api_data():
         }
     })
 
+@app.route('/api/history', methods=['GET'])
+@jwt_required()
+def get_sensor_history():
+    sensor = request.args.get('sensor', 'moisture').lower()
+    time_range = request.args.get('range', 'today')  # default to today for worker dashboard
+
+    now = datetime.utcnow()
+    if time_range == 'today':
+        start_time = now - timedelta(hours=24)
+    elif time_range == '7days':
+        start_time = now - timedelta(days=7)
+    elif time_range == '30days':
+        start_time = now - timedelta(days=30)
+    else:
+        start_time = now - timedelta(hours=24)  # fallback
+
+    valid_sensors = ['moisture', 'temperature', 'humidity', 'light']
+    if sensor not in valid_sensors:
+        return jsonify({'ok': False, 'error': 'Invalid sensor'}), 400
+
+    # Limit to reasonable number to avoid overload
+    readings = SensorReading.query.filter(
+        SensorReading.timestamp >= start_time
+    ).order_by(SensorReading.timestamp.asc()).limit(20000).all()
+
+    data = []
+    for r in readings:
+        val = getattr(r, sensor)
+        if val is not None:
+            data.append({
+                'timestamp': r.timestamp.isoformat(),  # ISO for JS Date parsing
+                'value': float(val)
+            })
+
+    return jsonify({
+        'ok': True,
+        'sensor': sensor,
+        'range': time_range,
+        'data': data,
+        'count': len(data)
+    })
+
 @app.route('/api/ingest', methods=['POST'])
 def ingest_sensor_data():
     """
@@ -798,40 +840,6 @@ def api_status():
         "mcu1": is_online,
         "mcu2": is_online,
         "auto_mode": config.auto_mode
-    })
-
-@app.route('/api/history', methods=['GET'])
-@jwt_required()
-def get_sensor_history():
-    sensor = request.args.get('sensor', 'moisture').lower()
-    time_range = request.args.get('range', '7days')
-
-    now = datetime.utcnow()
-    if time_range == 'today':
-        start_time = now - timedelta(hours=24)
-    elif time_range == '30days':
-        start_time = now - timedelta(days=30)
-    else:  # 7days
-        start_time = now - timedelta(days=7)
-
-    valid_sensors = ['moisture', 'temperature', 'humidity', 'light']
-    if sensor not in valid_sensors:
-        return jsonify({'ok': False, 'error': 'Invalid sensor'}), 400
-
-    readings = SensorReading.query.filter(
-        SensorReading.timestamp >= start_time
-    ).order_by(SensorReading.timestamp.asc()).limit(10000).all()
-
-    data = [{
-        'timestamp': r.timestamp.isoformat(),  # better for JS parsing
-        'value': getattr(r, sensor)
-    } for r in readings if getattr(r, sensor) is not None]
-
-    return jsonify({
-        'ok': True,
-        'sensor': sensor,
-        'range': time_range,
-        'data': data
     })
 
 @app.route('/api/logs', methods=['GET'])
