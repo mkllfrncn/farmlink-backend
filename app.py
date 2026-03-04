@@ -24,7 +24,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from io import BytesIO
 
-load_dotenv()  # This loads .env automatically
+load_dotenv()  # Loads .env automatically
 
 print(f"[START] PORT from env: {os.environ.get('PORT', 'NOT SET')}")
 print(f"[START] Binding to 0.0.0.0:{os.environ.get('PORT', '10000')}")
@@ -507,6 +507,47 @@ except Exception as startup_err:
     print(traceback.format_exc())
 
 # ─── API ROUTES ───────────────────────────────────────────────────────────
+@app.route('/api/history', methods=['GET'])
+@jwt_required()
+def get_sensor_history():
+    sensor = request.args.get('sensor', 'moisture').lower()
+    time_range = request.args.get('range', '7days')
+
+    # Calculate start time
+    now = datetime.utcnow()
+    if time_range == 'today':
+        start_time = now - timedelta(hours=24)
+        max_points = 8640  # 24h * 360 points/hour (if 10s intervals)
+    elif time_range == '30days':
+        start_time = now - timedelta(days=30)
+        max_points = 10000  # Limit for performance
+    else:  # 7days default
+        start_time = now - timedelta(days=7)
+        max_points = 60480  # 7d * 8640/d
+
+    # Validate sensor
+    valid_sensors = ['moisture', 'temperature', 'humidity', 'light']
+    if sensor not in valid_sensors:
+        return jsonify({'ok': False, 'error': 'Invalid sensor'}), 400
+
+    # Fetch readings
+    readings = SensorReading.query.filter(
+        SensorReading.timestamp >= start_time
+    ).order_by(SensorReading.timestamp.asc()).limit(max_points).all()
+
+    # Extract data
+    data = [{
+        'timestamp': r.timestamp.strftime('%Y-%m-%d %I:%M %p'),  # 12h format
+        'value': getattr(r, sensor)
+    } for r in readings if getattr(r, sensor) is not None]
+
+    return jsonify({
+        'ok': True,
+        'sensor': sensor,
+        'range': time_range,
+        'data': data
+    })
+
 @app.route('/api/login', methods=['POST'])
 def login():
     try:
@@ -517,7 +558,7 @@ def login():
         email = data.get("email", "").strip().lower()
         password = data.get("password", "").strip()
         role = data.get("role", "sakada")
-        access_code = data.get("access_code", "").strip()  # ← Matches frontend: "access_code"
+        access_code = data.get("access_code", "").strip() 
 
         if not email or not password:
             return jsonify({"ok": False, "error": "Email and password required"}), 400
@@ -526,7 +567,7 @@ def login():
         if not user:
             return jsonify({"ok": False, "error": "Account not found"}), 404
 
-        # Password check (common for all)
+        # Password check
         if not check_password_hash(user.password_hash, password):
             return jsonify({"ok": False, "error": "Incorrect password"}), 401
 
