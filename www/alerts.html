@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FarmLink - Alerts</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <header class="brand">
+        <h1>🌱 FARMLINK</h1>
+    </header>
+
+    <main class="container py-4">
+        <h2 class="text-center mb-4">Alerts</h2>
+        
+        <div class="d-flex justify-content-between mb-4 gap-2 flex-wrap">
+            <button id="refresh" class="btn btn-primary flex-grow-1">Refresh Now</button>
+            <button id="clear" class="btn btn-outline-danger flex-grow-1">Clear All</button>
+        </div>
+
+        <div id="alertslist" class="list-group">
+            <!-- Alerts will be injected here -->
+        </div>
+
+        <p class="text-center text-muted mt-4 small">
+            Critical alerts appear in red • Updates every 30 seconds
+        </p>
+
+        <!-- Back to Dashboard -->
+        <div class="mt-5">
+            <button id="backDashboard" class="btn btn-success w-100 py-3">
+                <strong>← Back to Dashboard</strong>
+            </button>
+        </div>
+    </main>
+
+    <!-- Scripts -->
+    <script src="js/config.js"></script>
+    <script src="js/notifications.js"></script>
+    <script src="js/alerts.js"></script>
+
+    <!-- Back + Clear logic -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // Back to correct dashboard
+            document.getElementById('backDashboard')?.addEventListener('click', () => {
+                const user = JSON.parse(localStorage.getItem('user') || '{}');
+                const role = (user.role || '').toLowerCase().trim();
+                window.location.href = role === 'owner' ? 'dashboard-owner.html' : 'dashboard-worker.html';
+            });
+
+            // Clear alerts (owner only)
+            document.getElementById('clear')?.addEventListener('click', async () => {
+                if (!confirm("Clear all alerts? This cannot be undone.")) return;
+
+                try {
+                    const token = localStorage.getItem('token') || '';
+                    if (!token) throw new Error("Please log in again.");
+
+                    const res = await fetch(`${API_BASE}/api/alerts/clear`, {
+                        method: 'POST',
+                        headers: { 
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    if (res.ok) {
+                        loadAlerts(); // assuming loadAlerts() is defined in alerts.js
+                        alert("All alerts cleared.");
+                    } else {
+                        const json = await res.json().catch(() => ({}));
+                        let msg = "Failed to clear alerts.";
+                        if (res.status === 403) msg = "Only the farm owner can clear alerts.";
+                        if (json.error) msg += ` ${json.error}`;
+                        alert(msg);
+                    }
+                } catch (err) {
+                    alert("Network error: " + err.message);
+                }
+            });
+        });
+    </script>
+</body>
+</html>

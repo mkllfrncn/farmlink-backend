@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FarmLink - Download Report</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <header class="brand">
+        <h1>🌱 FARMLINK</h1>
+    </header>
+
+    <main class="container py-4">
+        <h2 class="text-center mb-4">Download Report</h2>
+
+        <div class="card shadow-sm">
+            <div class="card-body p-4">
+                <form id="reportForm">
+                    <div class="mb-4">
+                        <label class="form-label fw-bold">Report Type</label>
+                        <select id="reportType" class="form-select" required>
+                            <option value="full">Full (detailed data over period)</option>
+                            <option value="daily">Daily Summary (averages per day)</option>
+                            <option value="today">Today Only</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label fw-bold">Format</label>
+                        <div class="d-flex gap-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="format" id="formatCsv" value="csv" checked>
+                                <label class="form-check-label" for="formatCsv">CSV (Excel compatible)</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="format" id="formatPdf" value="pdf">
+                                <label class="form-check-label" for="formatPdf">PDF (printable)</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-4" id="daysGroup">
+                        <label for="days" class="form-label fw-bold">Number of Days (for Full mode)</label>
+                        <input type="number" id="days" class="form-control" min="1" max="365" value="30">
+                        <small class="text-muted">Max 365 days</small>
+                    </div>
+
+                    <button type="submit" id="downloadBtn" class="btn btn-success w-100 py-3">
+                        <span id="btnText">Download Report</span>
+                        <span id="btnSpinner" class="spinner-border spinner-border-sm d-none ms-2" role="status"></span>
+                    </button>
+                </form>
+
+                <p class="text-center text-muted mt-4 small">
+                    Data is updated in real-time (~every 30 seconds)
+                </p>
+            </div>
+        </div>
+
+        <div class="mb-4 mt-5">
+            <button id="backDashboard" class="btn btn-success w-100 py-3">
+                <strong>← Back to Dashboard</strong>
+            </button>
+        </div>
+    </main>
+
+    <script>
+        window.API_BASE = 'https://farmlink-backend-rx5g.onrender.com';
+
+        document.getElementById('reportForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const btn = document.getElementById('downloadBtn');
+            const text = document.getElementById('btnText');
+            const spinner = document.getElementById('btnSpinner');
+
+            text.textContent = 'Generating...';
+            spinner.classList.remove('d-none');
+            btn.disabled = true;
+
+            try {
+                const type = document.getElementById('reportType').value;
+                const format = document.querySelector('input[name="format"]:checked').value;
+                const days = document.getElementById('days').value;
+
+                let url = `${API_BASE}/api/report?mode=${type}`;
+                if (type === 'full') {
+                    url += `&days=${days}`;
+                } else if (type === 'today') {
+                    url += '&days=1';
+                }
+
+                if (format === 'pdf') {
+                    url += '&format=pdf';
+                }
+
+                const token = localStorage.getItem('token') || '';
+                if (!token) throw new Error("Not logged in. Please log in again.");
+
+                const res = await fetch(url, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!res.ok) {
+                    const json = await res.json().catch(() => ({}));
+                    throw new Error(json.error || `Server error (${res.status})`);
+                }
+
+                let filename = `farmlink_${type}_${format}_${new Date().toISOString().split('T')[0]}.${format}`;
+                const disposition = res.headers.get('Content-Disposition');
+                if (disposition && disposition.includes('filename=')) {
+                    filename = disposition.split('filename=')[1].replace(/"/g, '').trim();
+                }
+
+                const blob = await res.blob();
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(downloadUrl);
+
+            } catch (err) {
+                console.error(err);
+                alert("Failed to generate report:\n" + err.message);
+            } finally {
+                text.textContent = 'Download Report';
+                spinner.classList.add('d-none');
+                btn.disabled = false;
+            }
+        });
+
+        // Show/hide days field based on report type
+        document.getElementById('reportType').addEventListener('change', (e) => {
+            document.getElementById('daysGroup').style.display = 
+                (e.target.value === 'full') ? 'block' : 'none';
+        });
+
+        // Back to Dashboard – same logic as other pages
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('backDashboard')?.addEventListener('click', () => {
+                const user = JSON.parse(localStorage.getItem('user') || '{}');
+                const role = (user.role || '').toLowerCase().trim();
+                window.location.href = role === 'owner' ? 'dashboard-owner.html' : 'dashboard-worker.html';
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FarmLink - User Profile</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <style>
+        /* Your original styles – unchanged */
+        body {
+            background: linear-gradient(135deg, #f5f9f5 0%, #e8f5e8 100%);
+            color: #1b5e20;
+            min-height: 100vh;
+            background-image:
+                url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120"><path fill="%234caf50" opacity="0.04" d="M60 20 L50 45 L25 60 L50 75 L60 100 L70 75 L95 60 L70 45 Z"/></svg>');
+            background-size: 240px 240px;
+            background-attachment: fixed;
+        }
+
+        header.brand {
+            background: #155015;
+            padding: 14px 16px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+
+        header.brand::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 60 60"><path fill="%234caf50" opacity="0.18" d="M30 12 L24 26 L12 30 L24 34 L30 48 L36 34 L48 30 L36 26 Z"/></svg>') repeat;
+            opacity: 0.12;
+        }
+
+        .back-arrow {
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 2rem;
+            color: white;
+            cursor: pointer;
+            text-decoration: none;
+        }
+
+        .profile-container {
+            max-width: 420px;
+            margin: 32px auto;
+            padding: 0 20px;
+        }
+
+        .profile-header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .avatar-wrapper {
+            position: relative;
+            width: 140px;
+            height: 140px;
+            margin: 0 auto 20px;
+        }
+
+        .avatar {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: white;
+            border: 5px solid #2e7d32;
+            overflow: hidden;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 70px;
+            color: #155015;
+        }
+
+        .avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .edit-avatar-btn {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background: #2e7d32;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 38px;
+            height: 38px;
+            font-size: 18px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            margin: 0 0 8px;
+            color: #155015;
+        }
+
+        .username {
+            font-size: 1.15rem;
+            color: #2e7d32;
+            margin-bottom: 32px;
+        }
+
+        .form-group {
+            margin-bottom: 24px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #1b5e20;
+        }
+
+        input[type="text"], input[type="email"] {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #81c784;
+            border-radius: 12px;
+            background: white;
+            color: #1b5e20;
+            font-size: 1rem;
+            box-shadow: inset 0 1px 4px rgba(0,0,0,0.05);
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #2e7d32;
+            box-shadow: 0 0 0 3px rgba(46,125,50,0.15);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px;
+            margin: 12px 0;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.05rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn:hover { transform: translateY(-1px); }
+
+        .btn-save     { background: linear-gradient(90deg, #2e7d32, #43a047); color: white; }
+        .btn-logs     { background: #1976d2; color: white; }
+        .btn-alerts   { background: #f57c00; color: white; }
+        .btn-signout  { background: #c62828; color: white; }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <header class="brand">
+        <a href="javascript:history.back()" class="back-arrow">←</a>
+        <h1>🌱FARMLINK</h1>
+    </header>
+
+    <div class="profile-container">
+        <div class="profile-header">
+            <div class="avatar-wrapper">
+                <div class="avatar" id="avatarPreview">👤</div>
+                <button class="edit-avatar-btn" onclick="document.getElementById('avatarInput').click()">✎</button>
+                <input type="file" id="avatarInput" accept="image/*" style="display:none;">
+            </div>
+            <h1 id="displayName">loading...</h1>
+            <div class="username">@<span id="username">loading...</span></div>
+        </div>
+
+        <div class="form-group">
+            <label>Full Name:</label>
+            <input id="fullname" type="text" placeholder="Enter full name">
+        </div>
+
+        <div class="form-group">
+            <label>Email:</label>
+            <input id="email" type="email" placeholder="Enter email" readonly>
+        </div>
+
+        <button id="saveBtn" class="btn btn-save">Save Changes</button>
+
+        <!-- Added onclick handlers here – only change made -->
+        <button id="logsBtn"    class="btn btn-logs hidden" onclick="window.location.href='logs.html'">Logs</button>
+        <button id="alertsBtn"  class="btn btn-alerts" onclick="window.location.href='alerts.html'">Alerts</button>
+        <button id="signoutBtn" class="btn btn-signout" onclick="if(confirm('Sign out?')) { localStorage.removeItem('user'); window.location.href='login.html'; }">Sign Out</button>
+    </div>
+
+    <!-- <script src="cordova.js"></script> -->
+    <script src="js/config.js"></script>
+    <script src="js/notifications.js"></script>
+    <script src="js/profile.js"></script>
+
+    <!-- Keep this small loader script – it fixes the "loading..." issue -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const user = JSON.parse(localStorage.getItem('user') || '{}');
+
+            if (!user.email) {
+                alert("Please log in first");
+                location.href = "login.html";
+                return;
+            }
+
+            // Update all fields safely
+            document.getElementById('displayName').textContent = user.fullname || "User";
+            document.getElementById('username').textContent   = user.email.split('@')[0] || "user";
+            document.getElementById('fullname').value         = user.fullname || "";
+            document.getElementById('email').value            = user.email || "No email";
+
+            // Show Logs button only for Owner
+            const isOwner = (user.role || "sakada").toLowerCase() === "owner";
+            document.getElementById('logsBtn').classList.toggle('hidden', !isOwner);
+        });
+    </script>
+</body>
+</html>
