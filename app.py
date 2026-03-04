@@ -589,35 +589,28 @@ def api_data():
 @jwt_required()
 def get_sensor_history():
     sensor = request.args.get('sensor', 'moisture').lower()
-    time_range = request.args.get('range', 'today')  # default to today for worker dashboard
+    time_range = request.args.get('range', '7days')
 
     now = datetime.utcnow()
     if time_range == 'today':
         start_time = now - timedelta(hours=24)
-    elif time_range == '7days':
-        start_time = now - timedelta(days=7)
     elif time_range == '30days':
         start_time = now - timedelta(days=30)
-    else:
-        start_time = now - timedelta(hours=24)  # fallback
+    else:  # default 7days
+        start_time = now - timedelta(days=7)
 
     valid_sensors = ['moisture', 'temperature', 'humidity', 'light']
     if sensor not in valid_sensors:
         return jsonify({'ok': False, 'error': 'Invalid sensor'}), 400
 
-    # Limit to reasonable number to avoid overload
     readings = SensorReading.query.filter(
         SensorReading.timestamp >= start_time
     ).order_by(SensorReading.timestamp.asc()).limit(20000).all()
 
-    data = []
-    for r in readings:
-        val = getattr(r, sensor)
-        if val is not None:
-            data.append({
-                'timestamp': r.timestamp.isoformat(),  # ISO for JS Date parsing
-                'value': float(val)
-            })
+    data = [{
+        'timestamp': r.timestamp.isoformat(),
+        'value': getattr(r, sensor)
+    } for r in readings if getattr(r, sensor) is not None]
 
     return jsonify({
         'ok': True,
