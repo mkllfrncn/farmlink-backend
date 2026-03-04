@@ -790,6 +790,28 @@ def clear_alerts():
     db.session.commit()
     return jsonify({'ok': True, 'message': 'All alerts cleared'})
 
+@app.route('/api/logs/clear', methods=['POST'])
+@jwt_required()
+def clear_logs():
+    current_user = User.query.filter_by(email=get_jwt_identity()).first()
+    if not current_user or current_user.role != 'owner':
+        return jsonify({'ok': False, 'error': 'Only owners can clear logs'}), 403
+    
+    deleted_count = Log.query.delete()
+    db.session.commit()
+    
+    add_log(
+        title="Logs Cleared",
+        message=f"All {deleted_count} log entries were cleared by owner",
+        log_type="system",
+        user_email=current_user.email
+    )
+    
+    return jsonify({
+        'ok': True,
+        'message': f'Cleared {deleted_count} log entries'
+    }), 200
+
 @app.route('/api/start-auto', methods=['POST'])
 @jwt_required()
 def start_auto():
@@ -970,7 +992,7 @@ def manual_water():
     })
 
 # ─── Remote Valve Control ─────────────────────────────────────────────────
-pending_command = None  # Global queue for next command
+pending_command = None
 
 @app.route('/api/control', methods=['POST'])
 @jwt_required()
@@ -979,42 +1001,19 @@ def control_valve():
     data = request.get_json()
     action = data.get('action')
 
-    if not action:
-        return jsonify({"ok": False, "error": "Missing 'action' field"}), 400
-
-    action = action.lower()
     if action not in ['open', 'close']:
         return jsonify({"ok": False, "error": "Action must be 'open' or 'close'"}), 400
 
-    current_email = get_jwt_identity()
-    user = User.query.filter_by(email=current_email).first()
-    if not user:
-        return jsonify({"ok": False, "error": "User not found"}), 404
-
-    # Log who requested it (both roles allowed)
-    add_log(
-        title="Manual Valve Command",
-        message=f"Valve {action.upper()} requested by {current_email} ({user.role})",
-        log_type="irrigation",
-        user_email=current_email
-    )
-
     pending_command = "OPEN" if action == "open" else "CLOSE"
-
-    return jsonify({
-        "ok": True,
-        "message": f"Valve {action.upper()} command queued"
-    }), 200
-
+    add_log("Manual Valve Command", f"{action.upper()} requested", "irrigation")
+    return jsonify({"ok": True, "message": f"Valve {action.upper()} queued"}), 200
 
 @app.route('/api/get-command', methods=['GET'])
 def get_pending_command():
     global pending_command
-    if pending_command:
-        cmd = pending_command
-        pending_command = None  # Consume the command
-        return jsonify({"command": cmd})
-    return jsonify({"command": None})
+    cmd = pending_command
+    pending_command = None  # Consume it so next poll gets null
+    return jsonify({"command": cmd})
 
 # ─── AUTH ─────────────────────────────────────────────────────────────────
 
