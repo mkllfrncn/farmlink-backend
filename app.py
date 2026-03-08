@@ -694,36 +694,117 @@ def ingest_sensor_data():
     # ─── Update last seen timestamp ────────────────────────────────────────────
     config.last_updated = now
 
-    # ─── Generate alerts for technical issues ──────────────────────────────────
+     # ─── Generate alerts for technical issues ──────────────────────────────────
     alerts_created = 0
 
-    # 1. Device offline / no recent data
-    if config.last_updated:  
+    # Helper: check if a similar alert already exists and is recent/unresolved
+    def has_recent_unresolved_alert(title_pattern, lookback_minutes=15):
+        recent = Alert.query.filter(
+            Alert.title.ilike(f"%{title_pattern}%"),
+            Alert.timestamp >= now - timedelta(minutes=lookback_minutes),
+            Alert.resolved == False
+        ).first()
+        return recent is not None
+
+    # 1. LoRa / Device Offline (most important for you)
+    if config.last_updated:
         offline_seconds = (now - config.last_updated).total_seconds()
-        if offline_seconds > 180:  
+        offline_minutes = offline_seconds / 60
+
+        if offline_seconds > 180:  # > 3 minutes no data → consider offline
+            if not has_recent_unresolved_alert("Offline", lookback_minutes=20):
+                alert = Alert(
+                    title="LoRa/MCU Offline",
+                    message=f"No data received for {offline_minutes:.0f} minutes – possible disconnect, power loss, or LoRa range issue",
+                    alert_type="connection",
+                    severity=9,  # Critical
+                )
+                db.session.add(alert)
+                alerts_created += 1
+                print(f"[ALERT CREATED] LoRa/MCU Offline ({offline_minutes:.1f} min)")
+        else:
+            # Device is back online → auto-resolve old offline alerts
+            old_offline = Alert.query.filter(
+                Alert.title.ilike("%Offline%"),
+                Alert.resolved == False
+            ).all()
+            for old in old_offline:
+                old.resolved = True
+                old.resolved_at = now
+                db.session.add(old)
+                print("[ALERT RESOLVED] LoRa/MCU is back online")
+            if old_offline:
+                add_log("Device Reconnected", "LoRa/MCU is receiving data again", "connection")
+
+    # 2. Invalid / out-of-range sensor readings
+    if moisture is not None and (moisture < 0 or moisture > 100):
+        if not has_recent_unresolved_alert("Invalid Moisture", 30):
             alert = Alert(
-                title="LoRa/MCU Offline",
-                message=f"No data received for ~{offline_seconds//60} minutes – possible disconnect",
-                alert_type="connection",
-                severity=8
+                title="Invalid Moisture Reading",
+                message=f"Moisture {moisture}% is out of valid range (0–100) – check sensor wiring/calibration",
+                alert_type="sensor",
+                severity=7,
             )
             db.session.add(alert)
             alerts_created += 1
 
-    # 2. Invalid moisture reading
-    if moisture is not None and (moisture < 0 or moisture > 100):
-        alert = Alert(
-            title="Invalid Moisture Reading",
-            message=f"Received moisture = {moisture}% (valid range: 0–100)",
-            alert_type="sensor",
-            severity=6
-        )
-        db.session.add(alert)
-        alerts_created += 1
+    if temperature is not None and (temperature < -5 or temperature > 60):
+        if not has_recent_unresolved_alert("Invalid Temperature", 30):
+            alert = Alert(
+                title="Invalid Temperature Reading",
+                message=f"Temperature {temperature}°C is unrealistic – likely sensor fault",
+                alert_type="sensor",
+                severity=7,
+            )
+            db.session.add(alert)
+            alerts_created += 1
 
-    # You can add similar checks for temperature, humidity, light here if desired
+    if humidity is not None and (humidity < 0 or humidity > 100):
+        if not has_recent_unresolved_alert("Invalid Humidity", 30):
+            alert = Alert(
+                title="Invalid Humidity Reading",
+                message=f"Humidity {humidity}% out of range – check sensor",
+                alert_type="sensor",
+                severity=6,
+            )
+            db.session.add(alert)
+            alerts_created += 1
 
-    # ─── Save to history table ─────────────────────────────────────────────────
+    # 3. Critical environment conditions (examples – adjust thresholds)
+    if light is not None and light < 15:  # very low light
+        if not has_recent_unresolved_alert("Low Light", 60):  # 1 hour debounce
+            alert = Alert(
+                title="Very Low Light Detected",
+                message=f"Light at {light}% – possible heavy cloud cover, night, deep shade or sensor blocked",
+                alert_type="environment",
+                severity=5,
+            )
+            db.session.add(alert)
+            alerts_created += 1
+
+    if config.current_temperature > config.max_temperature + 8:
+        if not has_recent_unresolved_alert("High Temperature", 20):
+            alert = Alert(
+                title="High Temperature Warning",
+                message=f"Temperature {config.current_temperature:.1f}°C exceeds safe limit ({config.max_temperature}°C) – risk of heat stress",
+                alert_type="environment",
+                severity=8,
+            )
+            db.session.add(alert)
+            alerts_created += 1
+
+    if config.current_humidity < config.min_humidity - 15:
+        if not has_recent_unresolved_alert("Low Humidity", 20):
+            alert = Alert(
+                title="Very Low Humidity Warning",
+                message=f"Humidity {config.current_humidity:.1f}% is critically low – possible plant drying stress",
+                alert_type="environment",
+                severity=6,
+            )
+            db.session.add(alert)
+            alerts_created += 1
+
+    # ─── Save reading even if alerts fail ────────────────────────────────
     reading = SensorReading(
         moisture    = config.current_moisture,
         temperature = config.current_temperature,
@@ -733,7 +814,7 @@ def ingest_sensor_data():
     )
     db.session.add(reading)
 
-    # ─── Commit everything ─────────────────────────────────────────────────────
+    # ─── Commit ──────────────────────────────────────────────────────────
     try:
         db.session.commit()
 
