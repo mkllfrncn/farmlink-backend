@@ -697,51 +697,50 @@ def ingest_sensor_data():
      # ─── Generate alerts for technical issues ──────────────────────────────────
     alerts_created = 0
 
-    # Helper: check if a similar alert already exists and is recent/unresolved
-    def has_recent_unresolved_alert(title_pattern, lookback_minutes=15):
-        recent = Alert.query.filter(
-            Alert.title.ilike(f"%{title_pattern}%"),
+    # Helper: Check if a similar unresolved alert already exists recently
+    def has_recent_unresolved_alert(title_contains, lookback_minutes=20):
+        return Alert.query.filter(
+            Alert.title.ilike(f"%{title_contains}%"),
             Alert.timestamp >= now - timedelta(minutes=lookback_minutes),
             Alert.resolved == False
-        ).first()
-        return recent is not None
+        ).first() is not None
 
-    # 1. LoRa / Device Offline (most important for you)
+    # 1. LoRa/MCU Offline Detection + Auto-Resolve
     if config.last_updated:
         offline_seconds = (now - config.last_updated).total_seconds()
         offline_minutes = offline_seconds / 60
 
-        if offline_seconds > 180:  # > 3 minutes no data → consider offline
-            if not has_recent_unresolved_alert("Offline", lookback_minutes=20):
+        if offline_seconds > 180:  # > 3 minutes no data
+            if not has_recent_unresolved_alert("Offline"):
                 alert = Alert(
                     title="LoRa/MCU Offline",
-                    message=f"No data received for {offline_minutes:.0f} minutes – possible disconnect, power loss, or LoRa range issue",
+                    message=f"No data received for {offline_minutes:.0f} minutes – possible disconnect, power issue, or out of LoRa range",
                     alert_type="connection",
                     severity=9,  # Critical
                 )
                 db.session.add(alert)
                 alerts_created += 1
-                print(f"[ALERT CREATED] LoRa/MCU Offline ({offline_minutes:.1f} min)")
+                print(f"[ALERT] Created: LoRa/MCU Offline ({offline_minutes:.1f} min)")
         else:
-            # Device is back online → auto-resolve old offline alerts
-            old_offline = Alert.query.filter(
+            # Device is sending data again → resolve any old offline alerts
+            old_offline_alerts = Alert.query.filter(
                 Alert.title.ilike("%Offline%"),
                 Alert.resolved == False
             ).all()
-            for old in old_offline:
-                old.resolved = True
-                old.resolved_at = now
-                db.session.add(old)
-                print("[ALERT RESOLVED] LoRa/MCU is back online")
-            if old_offline:
-                add_log("Device Reconnected", "LoRa/MCU is receiving data again", "connection")
+            for alert in old_offline_alerts:
+                alert.resolved = True
+                alert.resolved_at = now
+                db.session.add(alert)
+            if old_offline_alerts:
+                print(f"[ALERT] Resolved {len(old_offline_alerts)} offline alert(s) - device is back online")
+                add_log("Device Reconnected", f"LoRa/MCU back online after {offline_minutes:.1f} min offline", "connection")
 
-    # 2. Invalid / out-of-range sensor readings
+    # 2. Invalid/out-of-range readings (keep your existing ones, add debounce)
     if moisture is not None and (moisture < 0 or moisture > 100):
         if not has_recent_unresolved_alert("Invalid Moisture", 30):
             alert = Alert(
                 title="Invalid Moisture Reading",
-                message=f"Moisture {moisture}% is out of valid range (0–100) – check sensor wiring/calibration",
+                message=f"Moisture {moisture}% is invalid (0–100 expected) – check sensor",
                 alert_type="sensor",
                 severity=7,
             )
@@ -1093,9 +1092,12 @@ def control_valve():
 def get_pending_command():
     global pending_command
     cmd = pending_command
-    pending_command = None  # Consume it so next poll gets null
+    
+    # Consume it immediately — next poll gets null
+    if cmd is not None:
+        pending_command = None
+    
     return jsonify({"command": cmd})
-
 # ─── AUTH ─────────────────────────────────────────────────────────────────
 
 @app.route('/api/register', methods=['POST'])
@@ -1527,6 +1529,60 @@ def api_report():
         filename = f"farmlink_report_{mode}_{end_date.strftime('%Y%m%d')}.csv"
         response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
+
+
+def offline_monitor_thread():
+    while True:
+        try:
+            with app.app_context():
+                config = PalayanConfig.query.first()
+                if not config or not config.last_updated:
+                    time.sleep(60)
+                    continue
+
+                now = datetime.utcnow()
+                delta_sec = (now - config.last_updated).total_seconds()
+
+                # ─── Create alert if too long no data ───────────────────────
+                if delta_sec > 180:   # 3 minutes
+                    if not Alert.query.filter(
+                        Alert.title.ilike("%Offline%"),
+                        Alert.resolved == False,
+                        Alert.timestamp >= now - timedelta(minutes=10)
+                    ).first():
+
+                        alert = Alert(
+                            title="LoRa/MCU Offline",
+                            message=f"No data for {delta_sec//60:.0f} minutes – check power, LoRa range, antenna",
+                            alert_type="connection",
+                            severity=9,
+                        )
+                        db.session.add(alert)
+                        db.session.commit()
+                        print(f"[OFFLINE ALERT] Created – {delta_sec//60:.1f} min")
+
+                # ─── Auto-resolve when data comes back (optional cleanup) ───
+                elif delta_sec <= 90:
+                    old_alerts = Alert.query.filter(
+                        Alert.title.ilike("%Offline%"),
+                        Alert.resolved == False
+                    ).all()
+
+                    for a in old_alerts:
+                        a.resolved = True
+                        a.resolved_at = now
+                    if old_alerts:
+                        db.session.commit()
+                        print(f"[OFFLINE] Resolved {len(old_alerts)} alert(s)")
+
+        except Exception as e:
+            print("[OFFLINE MONITOR ERROR]", str(e))
+
+        time.sleep(60)  # check every minute
+
+
+# Start it
+threading.Thread(target=offline_monitor_thread, daemon=True, name="OfflineMonitor").start()
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
