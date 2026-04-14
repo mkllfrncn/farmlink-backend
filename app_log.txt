@@ -1,0 +1,29 @@
+[START] PORT from env: NOT SET
+[START] Binding to 0.0.0.0:10000
+[APP START] File loaded - no crash on import
+[APP START] Entering startup block
+[STARTUP] Creating tables...
+[STARTUP] Tables created or already exist
+[STARTUP] PalayanConfig already exists
+[STARTUP CRASH] Failed during startup
+[STARTUP CRASH] Error: 'charmap' codec can't encode character '\u2192' in position 44: character maps to <undefined>
+[STARTUP CRASH] Full traceback:
+Traceback (most recent call last):
+  File "C:\Users\Nicole\Desktop\farmlink_mobile\backend\app.py", line 326, in <module>
+    print("[STARTUP] At least one owner already exists \u2192 skipping owner seed")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 44: character maps to <undefined>
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Nicole\Desktop\farmlink_mobile\backend\app.py", line 335, in <module>
+    print(traceback.format_exc())
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 179: character maps to <undefined>
