@@ -1228,46 +1228,45 @@ manual_override_action = None
 @app.route('/api/control', methods=['POST'])
 @jwt_required()
 def control_valve():
-    global pending_command, manual_override_until, manual_override_action
+    global pending_command, manual_override_until
 
-    data = request.get_json() or {}
-    action = (data.get('action') or '').strip().lower()
-
-    if action not in ['open', 'close']:
-        return jsonify({"ok": False, "error": "Action must be 'open' or 'close'"}), 400
+    data = request.get_json()
+    action = (data.get('action') or '').lower()
 
     config = PalayanConfig.query.first()
     if not config:
-        return jsonify({"ok": False, "error": "No configuration found"}), 500
+        return jsonify({"ok": False, "error": "No config"}), 500
 
     now = datetime.utcnow()
 
-    pending_command = "OPEN" if action == "open" else "CLOSE"
-    manual_override_until = now + timedelta(minutes=2)
-    manual_override_action = action
-
-    if action == 'open':
+    if action == "open":
+        pending_command = "OPEN"
         config.solenoid_open = True
-        config.last_solenoid_open_at = now
-        config.last_solenoid_duration_sec = None
-    else:
+
+        #stop auto override for 2 minutes
+        manual_override_until = now + timedelta(minutes=2)
+
+        add_log("Manual Control", "User OPENED valve", "irrigation")
+
+    elif action == "close":
+        pending_command = "CLOSE"
         config.solenoid_open = False
-        if config.last_solenoid_open_at:
-            duration_sec = (now - config.last_solenoid_open_at).total_seconds()
-            config.last_solenoid_duration_sec = int(duration_sec)
 
-    add_log("Manual Valve Command", f"{action.upper()} requested", "irrigation")
+        #stop auto override for 2 minutes
+        manual_override_until = now + timedelta(minutes=2)
 
-    try:
-        db.session.commit()
-        return jsonify({
-            "ok": True,
-            "message": f"Valve {action.upper()} queued",
-            "solenoid_open": config.solenoid_open
-        }), 200
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"ok": False, "error": f"Database error: {str(e)}"}), 500
+        add_log("Manual Control", "User CLOSED valve", "irrigation")
+
+    else:
+        return jsonify({"ok": False, "error": "Invalid action"}), 400
+
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "pending_command": pending_command,
+        "solenoid_open": config.solenoid_open
+    })
 
 @app.route('/api/get-command', methods=['GET'])
 def get_pending_command():
