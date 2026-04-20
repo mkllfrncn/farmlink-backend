@@ -1003,21 +1003,22 @@ def clear_logs():
     current_user = User.query.filter_by(email=get_jwt_identity()).first()
     if not current_user or current_user.role != 'owner':
         return jsonify({'ok': False, 'error': 'Only owners can clear logs'}), 403
-    
-    deleted_count = Log.query.delete()
-    db.session.commit()
-    
-    add_log(
-        title="Logs Cleared",
-        message=f"All {deleted_count} log entries were cleared by owner",
-        log_type="system",
-        user_email=current_user.email
-    )
-    
-    return jsonify({
-        'ok': True,
-        'message': f'Cleared {deleted_count} log entries'
-    }), 200
+
+    try:
+        deleted_count = Log.query.delete()
+        db.session.commit()
+
+        return jsonify({
+            'ok': True,
+            'message': f'Cleared {deleted_count} log entries'
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            'ok': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/start-auto', methods=['POST'])
 @jwt_required()
